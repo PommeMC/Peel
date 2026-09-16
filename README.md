@@ -70,9 +70,9 @@ peel dump walk.trace
 
 ```text
 tick 2
-    +0.061645s  S->C  game           level_chunk_with_light            0x2d  5121 B
-    +0.061945s  C->S  game           move_player_pos                   0x1e  26 B
-    +0.061945s  C->S  game           client_tick_end                   0x0d  1 B
+    +0.061645s  to client  game           level_chunk_with_light            0x2d  5121 B
+    +0.061945s  to server  game           move_player_pos                   0x1e  26 B
+    +0.061945s  to server  game           client_tick_end                   0x0d  1 B
 ```
 
 Each line shows the time since the session started, the direction, the phase,
@@ -85,9 +85,10 @@ JSON document you can script against.
 peel view walk.trace
 ```
 
-Opens the trace in your browser: a timeline grouped by tick, filters by packet
-name, direction and phase, and the raw bytes of any packet you select. Step
-through packets with the arrow keys. The viewer is served from inside `peel`
+Opens the trace in your browser: a timeline grouped by tick with repeated
+packets folded together, an activity strip for jumping around, filters by
+packet name, direction and phase, and the raw bytes of any packet you select.
+Step through packets with the arrow keys, and link to one with `#record=N`. The viewer is served from inside `peel`
 on `127.0.0.1` and works offline; stop it with Ctrl+C.
 
 ## Privacy and scope

@@ -27,7 +27,8 @@ just pre-pr
 ```
 
 It runs `cargo fmt --check`, clippy with `-D warnings`, `cargo test`, the
-WebAssembly build, and the viewer's Prettier, ESLint and TypeScript checks.
+WebAssembly build, and the viewer's Prettier, ESLint, TypeScript and Vitest
+checks.
 
 For changes to capture, also run `peel capture` against a local offline-mode
 server with the vanilla client, and for viewer changes open a real trace in
@@ -133,7 +134,7 @@ viewer/
 └── src/
     ├── App.tsx             # Opening traces, filtering, selection
     ├── components/         # Summary, filters, timeline, packet detail, drop zone
-    └── lib/                # The wasm wrapper, types and formatting
+    └── lib/                # The wasm wrapper, filtering, rows and formatting, with tests
 peel-trace/
 └── src/
     ├── lib.rs              # Trace types, errors, format version

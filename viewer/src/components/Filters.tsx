@@ -1,36 +1,40 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
-import { DIRECTIONS, PHASES, directionLabel, thousands } from "../lib/format";
-import type { Direction, Phase } from "../lib/trace";
-
-export interface Filter {
-  query: string;
-  hiddenDirections: Direction[];
-  hiddenPhases: Phase[];
-}
+import type { Filter } from "../lib/filter";
+import {
+  DIRECTIONS,
+  PHASES,
+  directionLabel,
+  directionTitle,
+  thousands,
+} from "../lib/format";
+import { toggled } from "../lib/sets";
+import type { Phase, Timeline } from "../lib/trace";
 
 interface Props {
   filter: Filter;
   /** Takes an update rather than a value, so quick successive clicks compose. */
   onChange(update: (filter: Filter) => Filter): void;
+  searchRef?: Ref<HTMLInputElement>;
+  grouping: Timeline["grouping"];
+  /** A tick number, or seconds when the trace is grouped by time. */
+  onJump(value: number): void;
   phaseCounts: Map<Phase, number>;
   shown: number;
   total: number;
-}
-
-function toggle<T>(list: T[], item: T): T[] {
-  return list.includes(item) ? list.filter((i) => i !== item) : [...list, item];
 }
 
 /** A pill that is pressed while its items are shown. */
 function Toggle({
   pressed,
   tone,
+  title,
   onToggle,
   children,
 }: {
   pressed: boolean;
   tone: string;
+  title?: string;
   onToggle(): void;
   children: ReactNode;
 }) {
@@ -38,6 +42,7 @@ function Toggle({
     <button
       className={`toggle ${tone}`}
       aria-pressed={pressed}
+      title={title}
       onClick={onToggle}
     >
       {children}
@@ -48,6 +53,9 @@ function Toggle({
 export default function Filters({
   filter,
   onChange,
+  searchRef,
+  grouping,
+  onJump,
   phaseCounts,
   shown,
   total,
@@ -55,25 +63,50 @@ export default function Filters({
   return (
     <div className="filters">
       <input
+        ref={searchRef}
         className="search"
         type="search"
-        placeholder="Filter by packet name"
+        placeholder="Filter: name, -exclude"
+        title="Comma- or space-separated names; prefix a name with - to hide it. Press / to focus."
         value={filter.query}
         onChange={(event) => {
           const query = event.target.value;
           onChange((f) => ({ ...f, query }));
         }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            onChange((f) => ({ ...f, query: "" }));
+            event.currentTarget.blur();
+          }
+        }}
       />
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          const value = String(new FormData(event.currentTarget).get("jump"));
+          if (value.trim() !== "") onJump(Number(value));
+        }}
+      >
+        <input
+          className="search jump"
+          name="jump"
+          type="number"
+          min={0}
+          step={grouping === "tick" ? 1 : "any"}
+          placeholder={grouping === "tick" ? "Go to tick" : "Go to time (s)"}
+        />
+      </form>
       <div className="toggle-group">
         {DIRECTIONS.map((direction) => (
           <Toggle
             key={direction}
-            pressed={!filter.hiddenDirections.includes(direction)}
+            pressed={!filter.hiddenDirections.has(direction)}
             tone={`direction-${direction}`}
+            title={directionTitle(direction)}
             onToggle={() =>
               onChange((f) => ({
                 ...f,
-                hiddenDirections: toggle(f.hiddenDirections, direction),
+                hiddenDirections: toggled(f.hiddenDirections, direction),
               }))
             }
           >
@@ -85,12 +118,12 @@ export default function Filters({
         {PHASES.filter((phase) => phaseCounts.has(phase)).map((phase) => (
           <Toggle
             key={phase}
-            pressed={!filter.hiddenPhases.includes(phase)}
+            pressed={!filter.hiddenPhases.has(phase)}
             tone={`phase-${phase}`}
             onToggle={() =>
               onChange((f) => ({
                 ...f,
-                hiddenPhases: toggle(f.hiddenPhases, phase),
+                hiddenPhases: toggled(f.hiddenPhases, phase),
               }))
             }
           >

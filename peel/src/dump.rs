@@ -80,8 +80,8 @@ fn write_text(timeline: &Timeline, out: &mut impl Write) -> io::Result<()> {
                 "  {:>12}  {}  {:<13}  {:<32}  0x{:02x}  {} B",
                 format!("+{:.6}s", seconds(p.timestamp_us)),
                 match p.direction {
-                    Direction::Serverbound => "C->S",
-                    Direction::Clientbound => "S->C",
+                    Direction::Serverbound => "to server",
+                    Direction::Clientbound => "to client",
                 },
                 names::phase_label(p.phase),
                 p.name.unwrap_or("?"),

@@ -1,9 +1,12 @@
-import { directionLabel } from "../lib/format";
+import { directionLabel, directionTitle } from "../lib/format";
 import type { Direction, Phase } from "../lib/trace";
 
 export function DirectionBadge({ direction }: { direction: Direction }) {
   return (
-    <span className={`badge direction-${direction}`}>
+    <span
+      className={`badge direction-${direction}`}
+      title={directionTitle(direction)}
+    >
       {directionLabel(direction)}
     </span>
   );
