@@ -2,6 +2,7 @@ mod capture;
 mod dump;
 mod names;
 mod session;
+mod status;
 mod wire;
 
 use clap::{Parser, Subcommand};

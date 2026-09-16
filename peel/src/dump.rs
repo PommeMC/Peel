@@ -9,7 +9,7 @@ use peel_trace::{Direction, Header, Phase, Record, TraceReader};
 use pomme_protocol::{PacketTable, ProtocolVersion};
 use serde::Serialize;
 
-use crate::names;
+use crate::names::{self, TickMarker};
 
 /// Width of the approximate grouping windows used below protocol 768: one
 /// nominal game tick.
@@ -182,17 +182,11 @@ fn seconds(us: u64) -> f64 {
 }
 
 fn group(records: &[Record]) -> (Grouping, Vec<Group>) {
-    let tick_end = records.first().and_then(|first| {
-        let table = PacketTable::for_protocol(first.protocol)?;
-        names::packet_id(
-            table,
-            Phase::Game,
-            Direction::Serverbound,
-            "client_tick_end",
-        )
-    });
+    let marker = records
+        .first()
+        .and_then(|first| TickMarker::for_protocol(first.protocol));
     let mut groups: Vec<Group> = Vec::new();
-    let Some(tick_end) = tick_end else {
+    let Some(marker) = marker else {
         for record in records {
             let index = record.timestamp_us / WINDOW_US;
             if groups.last().is_none_or(|g| g.index != index) {
@@ -221,9 +215,7 @@ fn group(records: &[Record]) -> (Grouping, Vec<Group>) {
             open = true;
         }
         groups.last_mut().unwrap().packets.push(Packet::new(record));
-        if (record.direction, record.phase, record.packet_id)
-            == (Direction::Serverbound, Phase::Game, tick_end)
-        {
+        if marker.ends_tick(record) {
             ticks += 1;
             open = false;
         }
@@ -261,6 +253,7 @@ impl Packet {
 mod tests {
     use Direction::{Clientbound as Cb, Serverbound as Sb};
     use peel_trace::FORMAT_VERSION;
+    use pomme_protocol::version::LATEST;
 
     use super::*;
     use crate::wire::test_frames::named;
@@ -358,9 +351,10 @@ mod tests {
 
     #[test]
     fn json_shape() {
-        let json = serde_json::to_value(dump(&session(776, "client_tick_end"))).unwrap();
-        assert_eq!(json["protocol"], 776);
-        assert_eq!(json["version"], "26.2");
+        let records = session(LATEST.protocol, "client_tick_end");
+        let json = serde_json::to_value(dump(&records)).unwrap();
+        assert_eq!(json["protocol"], LATEST.protocol);
+        assert_eq!(json["version"], LATEST.name);
         assert_eq!(json["grouping"], "tick");
         let tick = &json["groups"][1];
         assert_eq!(tick["kind"], "tick");

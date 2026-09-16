@@ -1,11 +1,15 @@
 use std::io::{self, Write};
 
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
+
 use crate::{FORMAT_VERSION, Header, MAGIC, Record, varint};
 
-/// Writes a trace. Records are appended as they arrive with no trailer, so a
-/// trace cut off mid-capture still reads up to its last whole record.
+/// Writes a trace. Records are appended to one zlib stream as they arrive;
+/// [`flush`](Self::flush) makes everything written so far readable, so a
+/// trace cut off mid-capture still reads up to its last flush.
 pub struct TraceWriter<W: Write> {
-    inner: W,
+    records: ZlibEncoder<W>,
 }
 
 impl<W: Write> TraceWriter<W> {
@@ -17,7 +21,9 @@ impl<W: Write> TraceWriter<W> {
         varint::write(&mut buf, header.recorder.len() as u64);
         buf.extend_from_slice(header.recorder.as_bytes());
         inner.write_all(&buf)?;
-        Ok(Self { inner })
+        Ok(Self {
+            records: ZlibEncoder::new(inner, Compression::default()),
+        })
     }
 
     pub fn write(&mut self, record: &Record) -> io::Result<()> {
@@ -30,17 +36,24 @@ impl<W: Write> TraceWriter<W> {
 
         let mut len = Vec::with_capacity(4);
         varint::write(&mut len, (fields.len() + record.frame.len()) as u64);
-        self.inner.write_all(&len)?;
-        self.inner.write_all(&fields)?;
-        self.inner.write_all(&record.frame)
+        self.records.write_all(&len)?;
+        self.records.write_all(&fields)?;
+        self.records.write_all(&record.frame)
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
+        self.records.flush()
     }
 
-    pub fn into_inner(mut self) -> io::Result<W> {
-        self.inner.flush()?;
-        Ok(self.inner)
+    /// Compressed bytes produced so far, excluding the header.
+    pub fn compressed_len(&self) -> u64 {
+        self.records.total_out()
+    }
+
+    /// Ends the record stream and returns the flushed writer.
+    pub fn into_inner(self) -> io::Result<W> {
+        let mut inner = self.records.finish()?;
+        inner.flush()?;
+        Ok(inner)
     }
 }

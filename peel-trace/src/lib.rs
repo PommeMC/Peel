@@ -5,14 +5,16 @@
 //! computed on read and decoder fixes apply to old traces too. Shared with
 //! the Pomme client's built-in recorder, so the API stays small and stable.
 //!
-//! Layout (format version 1, integers little-endian, varints as in the
-//! Minecraft protocol, strings as a varint byte length plus UTF-8):
+//! Layout (integers little-endian, varints as in the Minecraft protocol,
+//! strings as a varint byte length plus UTF-8). Version 2 compresses the
+//! records into one zlib stream; version 1 stored them as is.
 //!
 //! ```text
-//! file   = "PEEL" u16:format_version header record*
-//! header = u64:started_at_unix_ms string:recorder
-//! record = varint:len body[len]
-//! body   = varint:timestamp_us varint:protocol u8:direction u8:phase varint:packet_id frame[rest]
+//! file    = "PEEL" u16:format_version header records
+//! header  = u64:started_at_unix_ms string:recorder
+//! records = zlib(record*)            (version 1: record*)
+//! record  = varint:len body[len]
+//! body    = varint:timestamp_us varint:protocol u8:direction u8:phase varint:packet_id frame[rest]
 //! ```
 
 mod read;
@@ -29,7 +31,7 @@ const MAGIC: &[u8; 4] = b"PEEL";
 
 /// The format version writers produce. Readers open this and every older
 /// version.
-pub const FORMAT_VERSION: u16 = 1;
+pub const FORMAT_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,6 +116,12 @@ impl std::error::Error for Error {
 
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
+        if err
+            .get_ref()
+            .is_some_and(|inner| inner.is::<read::IncompleteStream>())
+        {
+            return Error::Truncated;
+        }
         Error::Io(err)
     }
 }
@@ -143,12 +151,25 @@ impl Phase {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::io::Write;
+    use std::rc::Rc;
+
     use super::*;
+
+    /// A version 1 trace from the last version 1 writer, holding the first
+    /// two of [`records`] under [`header`]. It must keep opening.
+    const V1_TRACE: &[u8] = &[
+        0x50, 0x45, 0x45, 0x4c, 0x01, 0x00, 0x00, 0xa2, 0xb5, 0x88, 0xa0, 0x01, 0x00, 0x00, 0x0a,
+        0x70, 0x65, 0x65, 0x6c, 0x20, 0x30, 0x2e, 0x31, 0x2e, 0x30, 0x0a, 0x00, 0x88, 0x06, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x0f, 0xce, 0xc2, 0xf1, 0x05, 0xc5, 0x82, 0x80, 0x80,
+        0x04, 0x01, 0x04, 0xac, 0x02, 0xac, 0x02,
+    ];
 
     fn header() -> Header {
         Header {
             started_at_unix_ms: 1_789_000_000_000,
-            recorder: "peel test".into(),
+            recorder: "peel 0.1.0".into(),
         }
     }
 
@@ -182,18 +203,36 @@ mod tests {
         ]
     }
 
-    fn encode(header: &Header, records: &[Record]) -> Vec<u8> {
-        let mut writer = TraceWriter::new(Vec::new(), header).unwrap();
+    /// A writer whose bytes stay readable while the trace writer holds it.
+    #[derive(Clone, Default)]
+    struct SharedBuf(Rc<RefCell<Vec<u8>>>);
+
+    impl Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn encode(records: &[Record]) -> Vec<u8> {
+        let mut writer = TraceWriter::new(Vec::new(), &header()).unwrap();
         for record in records {
             writer.write(record).unwrap();
         }
         writer.into_inner().unwrap()
     }
 
+    fn read_all(bytes: &[u8]) -> Vec<Result<Record>> {
+        TraceReader::new(bytes).unwrap().collect()
+    }
+
     #[test]
     fn round_trip() {
-        let bytes = encode(&header(), &records());
-        assert_eq!(&bytes[..6], b"PEEL\x01\x00");
+        let bytes = encode(&records());
+        assert_eq!(&bytes[..6], b"PEEL\x02\x00");
         let reader = TraceReader::new(bytes.as_slice()).unwrap();
         assert_eq!(reader.format_version(), FORMAT_VERSION);
         assert_eq!(reader.header(), &header());
@@ -202,8 +241,34 @@ mod tests {
     }
 
     #[test]
+    fn reads_version_1() {
+        let reader = TraceReader::new(V1_TRACE).unwrap();
+        assert_eq!(reader.format_version(), 1);
+        assert_eq!(reader.header(), &header());
+        let read: Vec<Record> = reader.collect::<Result<_>>().unwrap();
+        assert_eq!(read, records()[..2]);
+    }
+
+    #[test]
+    fn compresses_records() {
+        let frame: Vec<u8> = (0..16_000u32).map(|i| (i % 64) as u8).collect();
+        let records: Vec<Record> = (0..20)
+            .map(|i| Record {
+                timestamp_us: i * 50_000,
+                frame: frame.clone(),
+                ..records()[1].clone()
+            })
+            .collect();
+        let raw: usize = records.iter().map(|r| r.frame.len()).sum();
+        let bytes = encode(&records);
+        assert!(bytes.len() * 4 < raw, "{} of {raw} bytes", bytes.len());
+        let read: Vec<Record> = read_all(&bytes).into_iter().collect::<Result<_>>().unwrap();
+        assert_eq!(read, records);
+    }
+
+    #[test]
     fn rejects_future_version() {
-        let mut bytes = encode(&header(), &[]);
+        let mut bytes = encode(&[]);
         bytes[4..6].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
         let err = TraceReader::new(bytes.as_slice()).err().unwrap();
         assert!(
@@ -216,7 +281,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic() {
-        let mut bytes = encode(&header(), &[]);
+        let mut bytes = encode(&[]);
         bytes[0] = b'X';
         assert!(matches!(
             TraceReader::new(bytes.as_slice()),
@@ -229,27 +294,52 @@ mod tests {
     }
 
     #[test]
-    fn truncated_tail_keeps_earlier_records() {
-        let mut bytes = encode(&header(), &records());
+    fn cut_off_after_a_flush_keeps_flushed_records() {
+        let shared = SharedBuf::default();
+        let mut writer = TraceWriter::new(shared.clone(), &header()).unwrap();
+        for record in &records()[..2] {
+            writer.write(record).unwrap();
+        }
+        writer.flush().unwrap();
+        let flushed = shared.0.borrow().clone();
+        writer.write(&records()[2]).unwrap();
+
+        let read = read_all(&flushed);
+        assert_eq!(read.len(), 3, "{read:?}");
+        assert_eq!(read[0].as_ref().unwrap(), &records()[0]);
+        assert_eq!(read[1].as_ref().unwrap(), &records()[1]);
+        assert!(matches!(read[2], Err(Error::Truncated)), "{:?}", read[2]);
+    }
+
+    #[test]
+    fn missing_trailer_is_truncated() {
+        let mut bytes = encode(&records());
         bytes.pop();
-        let mut reader = TraceReader::new(bytes.as_slice()).unwrap();
-        assert_eq!(reader.next().unwrap().unwrap(), records()[0]);
-        assert_eq!(reader.next().unwrap().unwrap(), records()[1]);
-        assert!(matches!(reader.next(), Some(Err(Error::Truncated))));
-        assert!(reader.next().is_none());
+        let read = read_all(&bytes);
+        assert!(
+            matches!(read.last(), Some(Err(Error::Truncated))),
+            "{read:?}"
+        );
+    }
+
+    #[test]
+    fn version_1_cut_off_mid_record_is_truncated() {
+        let read = read_all(&V1_TRACE[..V1_TRACE.len() - 1]);
+        assert_eq!(read[0].as_ref().unwrap(), &records()[0]);
+        assert!(matches!(read[1], Err(Error::Truncated)), "{:?}", read[1]);
     }
 
     #[test]
     fn rejects_unknown_enum_bytes() {
-        let bytes = encode(&header(), &records()[..1]);
-        // Header, then record length, timestamp and a 2-byte protocol varint.
-        let direction_at = encode(&header(), &[]).len() + 1 + 1 + 2;
+        // Version 1's header is 25 bytes, then the first record's length,
+        // timestamp and 2-byte protocol varint.
+        let direction_at = 25 + 1 + 1 + 2;
         for (offset, what) in [(0, "unknown direction"), (1, "unknown phase")] {
-            let mut bad = bytes.clone();
+            let mut bad = V1_TRACE.to_vec();
             bad[direction_at + offset] = 9;
-            let mut reader = TraceReader::new(bad.as_slice()).unwrap();
+            let read = read_all(&bad);
             assert!(
-                matches!(reader.next(), Some(Err(Error::Malformed(m))) if m == what),
+                matches!(read[0], Err(Error::Malformed(m)) if m == what),
                 "{what}"
             );
         }

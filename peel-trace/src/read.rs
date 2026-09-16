@@ -1,15 +1,31 @@
+use std::fmt;
 use std::io::{self, Read};
+
+use flate2::read::ZlibDecoder;
 
 use crate::{Direction, Error, FORMAT_VERSION, Header, MAGIC, Phase, Record, Result, varint};
 
 /// Reads a trace of any format version up to [`FORMAT_VERSION`], yielding its
 /// records in order. Iteration stops after the first error.
 pub struct TraceReader<R: Read> {
-    inner: R,
+    records: Source<R>,
     version: u16,
     header: Header,
     done: bool,
 }
+
+/// Where records are read from: the file itself up to version 1, a zlib
+/// stream from version 2.
+enum Source<R: Read> {
+    Plain(R),
+    Zlib(ZlibDecoder<R>),
+}
+
+/// Marks a zlib stream that ends without its trailer, which a plain
+/// `UnexpectedEof` can't express: the varint reader takes that for a clean
+/// end of the trace.
+#[derive(Debug)]
+pub(crate) struct IncompleteStream;
 
 impl<R: Read> TraceReader<R> {
     pub fn new(mut inner: R) -> Result<Self> {
@@ -30,9 +46,13 @@ impl<R: Read> TraceReader<R> {
                 newest: FORMAT_VERSION,
             });
         }
-        let header = read_header_v1(&mut inner)?;
+        let header = read_header(&mut inner)?;
+        let records = match version {
+            1 => Source::Plain(inner),
+            _ => Source::Zlib(ZlibDecoder::new(inner)),
+        };
         Ok(Self {
-            inner,
+            records,
             version,
             header,
             done: false,
@@ -48,14 +68,10 @@ impl<R: Read> TraceReader<R> {
     }
 
     fn read_record(&mut self) -> Result<Option<Record>> {
-        let Some(len) = varint::read_stream(&mut self.inner)? else {
+        let Some(len) = varint::read_stream(&mut self.records)? else {
             return Ok(None);
         };
-        let body = read_bytes(&mut self.inner, len)?;
-        match self.version {
-            1 => record_v1(&body).map(Some),
-            _ => unreachable!("version checked in new"),
-        }
+        read_body(&read_bytes(&mut self.records, len)?).map(Some)
     }
 }
 
@@ -73,6 +89,26 @@ impl<R: Read> Iterator for TraceReader<R> {
         item
     }
 }
+
+impl<R: Read> Read for Source<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Source::Plain(inner) => inner.read(buf),
+            Source::Zlib(inner) => inner.read(buf).map_err(|err| match err.kind() {
+                io::ErrorKind::UnexpectedEof => io::Error::other(IncompleteStream),
+                _ => err,
+            }),
+        }
+    }
+}
+
+impl fmt::Display for IncompleteStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("record stream ends without its trailer")
+    }
+}
+
+impl std::error::Error for IncompleteStream {}
 
 fn eof_is_truncated(err: io::Error) -> Error {
     match err.kind() {
@@ -92,7 +128,7 @@ fn read_bytes(r: &mut impl Read, len: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn read_header_v1(r: &mut impl Read) -> Result<Header> {
+fn read_header(r: &mut impl Read) -> Result<Header> {
     let mut started = [0u8; 8];
     r.read_exact(&mut started).map_err(eof_is_truncated)?;
     let len = varint::read_stream(r)?.ok_or(Error::Truncated)?;
@@ -104,7 +140,7 @@ fn read_header_v1(r: &mut impl Read) -> Result<Header> {
     })
 }
 
-fn record_v1(mut body: &[u8]) -> Result<Record> {
+fn read_body(mut body: &[u8]) -> Result<Record> {
     let timestamp_us = varint::read_slice(&mut body)?;
     let protocol = u32::try_from(varint::read_slice(&mut body)?)
         .map_err(|_| Error::Malformed("protocol out of range"))? as i32;

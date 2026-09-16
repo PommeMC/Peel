@@ -198,10 +198,11 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use Direction::{Clientbound as Cb, Serverbound as Sb};
+    use pomme_protocol::version::{LATEST, VERSIONS};
 
     use super::*;
     use crate::wire::test_frames::{
-        LOGIN, STATUS, TRANSFER, frame, handshake, intention, named, packet,
+        LOGIN, STATUS, TRANSFER, frame, handshake, intention, latest, named, packet,
     };
 
     struct Harness {
@@ -219,6 +220,11 @@ mod tests {
                 table: PacketTable::for_protocol(protocol).unwrap(),
                 threshold: None,
             }
+        }
+
+        fn handshake(&mut self, intent: u32) -> Fed {
+            let body = intention(self.protocol, intent);
+            self.send(Sb, Phase::Handshake, "intention", &body)
         }
 
         /// Sends one framed packet, looked up by name in `phase`, and
@@ -254,12 +260,7 @@ mod tests {
     fn login_flow(protocol: i32) {
         const THRESHOLD: usize = 16;
         let mut h = Harness::new(protocol);
-        let fed = h.send(
-            Sb,
-            Phase::Handshake,
-            "intention",
-            &intention(protocol, LOGIN),
-        );
+        let fed = h.handshake(LOGIN);
         assert!(matches!(
             fed.notices.as_slice(),
             [Notice::Handshake { known: true, .. }]
@@ -275,7 +276,7 @@ mod tests {
 
         let has_configuration =
             names::packet_id(h.table, Phase::Login, Sb, "login_acknowledged").is_some();
-        assert_eq!(has_configuration, protocol != 763);
+        assert_eq!(has_configuration, protocol > 763);
         if !has_configuration {
             h.send(Sb, Phase::Game, "keep_alive", &[0; 8]);
             h.send(Cb, Phase::Game, "login", &[2; 100]);
@@ -301,41 +302,25 @@ mod tests {
     }
 
     #[test]
-    fn login_flow_763() {
-        login_flow(763);
-    }
-
-    #[test]
-    fn login_flow_764() {
-        login_flow(764);
-    }
-
-    #[test]
-    fn login_flow_768() {
-        login_flow(768);
-    }
-
-    #[test]
-    fn login_flow_776() {
-        login_flow(776);
-    }
-
-    #[test]
-    fn login_flow_777() {
-        login_flow(777);
+    fn login_flow_every_version() {
+        let mut protocols: Vec<i32> = VERSIONS.iter().map(|v| v.protocol).collect();
+        protocols.dedup();
+        for protocol in protocols {
+            login_flow(protocol);
+        }
     }
 
     #[test]
     fn transfer_goes_to_login() {
-        let mut h = Harness::new(776);
-        h.send(Sb, Phase::Handshake, "intention", &intention(776, TRANSFER));
+        let mut h = Harness::new(LATEST.protocol);
+        h.handshake(TRANSFER);
         h.send(Sb, Phase::Login, "hello", b"player");
     }
 
     #[test]
     fn status_connection() {
-        let mut h = Harness::new(776);
-        h.send(Sb, Phase::Handshake, "intention", &intention(776, STATUS));
+        let mut h = Harness::new(LATEST.protocol);
+        h.handshake(STATUS);
         h.send(Sb, Phase::Status, "status_request", &[]);
         h.send(Cb, Phase::Status, "status_response", b"\x02{}");
         h.send(Sb, Phase::Status, "ping_request", &[0; 8]);
@@ -344,8 +329,8 @@ mod tests {
 
     #[test]
     fn encryption_request_stops() {
-        let mut h = Harness::new(776);
-        h.send(Sb, Phase::Handshake, "intention", &intention(776, LOGIN));
+        let mut h = Harness::new(LATEST.protocol);
+        h.handshake(LOGIN);
         h.send(Sb, Phase::Login, "hello", b"player");
         let fed = h.send(Cb, Phase::Login, "hello", &[0; 16]);
         assert!(matches!(
@@ -403,14 +388,14 @@ mod tests {
         assert!(matches!(fed.notices.as_slice(), [Notice::Untracked(_)]));
 
         let mut session = Session::new();
-        let fed = session.feed(Sb, &frame(&handshake(PacketTable::native(), 9), None), 0);
+        let fed = session.feed(Sb, &frame(&handshake(latest(), 9), None), 0);
         assert!(fed.records.is_empty());
         assert!(matches!(fed.notices.as_slice(), [Notice::Untracked(_)]));
     }
 
     #[test]
     fn several_frames_in_one_feed_follow_compression() {
-        let table = PacketTable::native();
+        let table = latest();
         let mut session = Session::new();
         session.feed(Sb, &frame(&handshake(table, LOGIN), None), 0);
         let (_, compression) = named(table, Phase::Login, Cb, "login_compression", &[8]);

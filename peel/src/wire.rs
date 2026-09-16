@@ -128,6 +128,7 @@ pub mod test_frames {
     use flate2::write::ZlibEncoder;
     use peel_trace::{Direction, Phase};
     use pomme_protocol::PacketTable;
+    use pomme_protocol::version::LATEST;
     use pomme_protocol::wire::write_varint;
 
     use crate::names;
@@ -157,6 +158,11 @@ pub mod test_frames {
             panic!("{version} has no {phase:?} {direction:?} {name}")
         });
         (id, packet(id, body))
+    }
+
+    /// The table for the newest supported version.
+    pub fn latest() -> &'static PacketTable {
+        PacketTable::for_protocol(LATEST.protocol).expect("the newest version has tables")
     }
 
     /// The handshake packet for `table`'s protocol.
@@ -208,6 +214,7 @@ pub mod test_frames {
 
 #[cfg(test)]
 mod tests {
+    use pomme_protocol::version::LATEST;
     use pomme_protocol::wire::write_varint;
 
     use super::test_frames::{LOGIN, STATUS, TRANSFER, frame, intention, packet};
@@ -317,9 +324,9 @@ mod tests {
     #[test]
     fn intention_fields() {
         assert_eq!(
-            parse_intention(&intention(776, LOGIN)).unwrap(),
+            parse_intention(&intention(LATEST.protocol, LOGIN)).unwrap(),
             Intention {
-                protocol: 776,
+                protocol: LATEST.protocol,
                 intent: Intent::Login
             }
         );
@@ -329,7 +336,7 @@ mod tests {
                 .intent,
             Intent::Transfer
         );
-        assert!(parse_intention(&intention(776, 4)).is_err());
-        assert!(parse_intention(&intention(776, STATUS)[..5]).is_err());
+        assert!(parse_intention(&intention(LATEST.protocol, 4)).is_err());
+        assert!(parse_intention(&intention(LATEST.protocol, STATUS)[..5]).is_err());
     }
 }
