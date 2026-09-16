@@ -1,0 +1,18 @@
+[package]
+name = "peel-decode"
+description = "Turns Peel traces into packet names, phases and tick timelines."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+test-util = []
+
+[dependencies]
+peel-trace = { workspace = true }
+pomme-protocol = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

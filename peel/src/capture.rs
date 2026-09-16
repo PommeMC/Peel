@@ -16,10 +16,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
+use peel_decode::names::TickMarker;
 use peel_trace::{Direction, Header, Record, TraceWriter};
 use pomme_protocol::ProtocolVersion;
 
-use crate::names::TickMarker;
 use crate::session::{Notice, Session};
 use crate::status::{self, note};
 use crate::wire::{Intent, Intention};
@@ -334,12 +334,13 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use peel_decode::test_util::{latest, named};
     use peel_trace::{Phase, TraceReader};
     use pomme_protocol::PacketTable;
     use pomme_protocol::version::LATEST;
 
     use super::*;
-    use crate::wire::test_frames::{LOGIN, STATUS, frame, handshake, intention, latest, named};
+    use crate::wire::test_frames::{LOGIN, STATUS, frame, handshake, intention};
 
     struct Proxy {
         proxy: SocketAddr,

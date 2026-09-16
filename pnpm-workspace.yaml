@@ -1,0 +1,4 @@
+packages:
+  - "viewer"
+allowBuilds:
+  unrs-resolver: false

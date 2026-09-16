@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["peel", "peel-trace"]
+members = ["peel", "peel-decode", "peel-trace", "peel-wasm"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,7 @@ license = "GPL-3.0-or-later"
 repository = "https://github.com/PommeMC/Peel"
 
 [workspace.dependencies]
+peel-decode = { path = "peel-decode", version = "0.1.0" }
 peel-trace = { path = "peel-trace", version = "0.1.0" }
 # Not on crates.io yet: point cargo at a local checkout with a gitignored
 # `.cargo/config.toml` `[patch.crates-io]` entry. Never commit that patch.
@@ -18,3 +19,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 flate2 = "1"
 anyhow = "1"
+# `just wasm` runs wasm-bindgen-cli, which must be this exact version.
+wasm-bindgen = "=0.2.128"
+
+[profile.release.package.peel-wasm]
+opt-level = "s"

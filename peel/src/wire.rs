@@ -126,44 +126,15 @@ pub mod test_frames {
 
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
+    use peel_decode::test_util::named;
     use peel_trace::{Direction, Phase};
     use pomme_protocol::PacketTable;
-    use pomme_protocol::version::LATEST;
     use pomme_protocol::wire::write_varint;
-
-    use crate::names;
 
     /// `ClientIntent` ids.
     pub const STATUS: u32 = 1;
     pub const LOGIN: u32 = 2;
     pub const TRANSFER: u32 = 3;
-
-    pub fn packet(id: u32, body: &[u8]) -> Vec<u8> {
-        let mut packet = Vec::new();
-        write_varint(&mut packet, id);
-        packet.extend_from_slice(body);
-        packet
-    }
-
-    /// A packet looked up by name in `table`, with its id.
-    pub fn named(
-        table: &PacketTable,
-        phase: Phase,
-        direction: Direction,
-        name: &str,
-        body: &[u8],
-    ) -> (u32, Vec<u8>) {
-        let id = names::packet_id(table, phase, direction, name).unwrap_or_else(|| {
-            let version = table.version().name;
-            panic!("{version} has no {phase:?} {direction:?} {name}")
-        });
-        (id, packet(id, body))
-    }
-
-    /// The table for the newest supported version.
-    pub fn latest() -> &'static PacketTable {
-        PacketTable::for_protocol(LATEST.protocol).expect("the newest version has tables")
-    }
 
     /// The handshake packet for `table`'s protocol.
     pub fn handshake(table: &PacketTable, intent: u32) -> Vec<u8> {
@@ -214,10 +185,11 @@ pub mod test_frames {
 
 #[cfg(test)]
 mod tests {
+    use peel_decode::test_util::packet;
     use pomme_protocol::version::LATEST;
     use pomme_protocol::wire::write_varint;
 
-    use super::test_frames::{LOGIN, STATUS, TRANSFER, frame, intention, packet};
+    use super::test_frames::{LOGIN, STATUS, TRANSFER, frame, intention};
     use super::*;
 
     fn drain(splitter: &mut FrameSplitter) -> Vec<Vec<u8>> {

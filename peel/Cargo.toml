@@ -11,10 +11,13 @@ name = "peel"
 path = "src/main.rs"
 
 [dependencies]
+peel-decode = { workspace = true }
 peel-trace = { workspace = true }
 pomme-protocol = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 flate2 = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+peel-decode = { workspace = true, features = ["test-util"] }

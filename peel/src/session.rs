@@ -7,11 +7,11 @@
 //! and older have one shared protocol and no configuration phase.
 
 use anyhow::{Context, Result, ensure};
+use peel_decode::names;
 use peel_trace::{Direction, Phase, Record};
 use pomme_protocol::PacketTable;
 use pomme_protocol::wire::read_varint;
 
-use crate::names;
 use crate::wire::{self, FrameSplitter, Intent, Intention};
 
 pub enum Notice {
@@ -198,12 +198,11 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use Direction::{Clientbound as Cb, Serverbound as Sb};
+    use peel_decode::test_util::{latest, named, packet};
     use pomme_protocol::version::{LATEST, VERSIONS};
 
     use super::*;
-    use crate::wire::test_frames::{
-        LOGIN, STATUS, TRANSFER, frame, handshake, intention, latest, named, packet,
-    };
+    use crate::wire::test_frames::{LOGIN, STATUS, TRANSFER, frame, handshake, intention};
 
     struct Harness {
         session: Session,

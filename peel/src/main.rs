@@ -1,8 +1,8 @@
 mod capture;
 mod dump;
-mod names;
 mod session;
 mod status;
+mod view;
 mod wire;
 
 use clap::{Parser, Subcommand};
@@ -20,11 +20,14 @@ enum Command {
     Capture(capture::Args),
     /// Print a trace grouped by tick.
     Dump(dump::Args),
+    /// Open a trace in the viewer.
+    View(view::Args),
 }
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Capture(args) => capture::run(args),
         Command::Dump(args) => dump::run(args),
+        Command::View(args) => view::run(args),
     }
 }

@@ -1,4 +1,8 @@
 /target
+node_modules/
+# Built by `just viewer-build` and `just wasm`.
+/viewer/dist
+/viewer/src/wasm
 # Local pomme-protocol patch; never commit it.
 /.cargo/config.toml
 # Captures carry usernames, chat and positions.

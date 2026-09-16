@@ -10,24 +10,29 @@ Thanks for your interest in contributing to Peel!
 3. Build and run:
 
    ```bash
-   cargo build
-   cargo run -- capture --out test.trace
+   pnpm install
+   just build
+   cargo run -- view path/to/session.trace
    ```
+
+   For viewer work, `just viewer-dev` starts Vite's dev server with hot reload;
+   open a trace from its landing page.
 
 ## Before Submitting a PR
 
-All of these must pass.
+This must pass:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+just pre-pr
 ```
 
+It runs `cargo fmt --check`, clippy with `-D warnings`, `cargo test`, the
+WebAssembly build, and the viewer's Prettier, ESLint and TypeScript checks.
+
 For changes to capture, also run `peel capture` against a local offline-mode
-server with the vanilla client, and say in the PR what you checked. Passing
-tests and a real capture are different things; don't call a change working
-until it has been run.
+server with the vanilla client, and for viewer changes open a real trace in
+`peel view`. Say in the PR what you checked. Passing tests and a real run are
+different things; don't call a change working until it has been run.
 
 ## Development Guidelines
 
@@ -69,6 +74,16 @@ online-mode interception. Beyond those:
 - **Version support comes only from `pomme-protocol`.** Never add or patch
   packet tables in Peel
 
+### Viewer
+
+- **Decoding stays in Rust.** Anything that turns records into names, phases,
+  ticks or fields belongs in `peel-decode`, exposed through `peel-wasm`; never
+  reimplement it in TypeScript
+- **Works offline.** No CDNs, external fonts, analytics or network calls; a
+  trace never leaves the browser
+- **Polish is in scope.** Screenshots of the viewer are the project's main
+  marketing
+
 ### Trace format
 
 - **Store raw frames, never decoded fields**, so decoder fixes apply to old
@@ -104,9 +119,21 @@ peel/
     ├── capture.rs          # Proxy, connection handling, recorder thread
     ├── session.rs          # Per-connection framing, compression and phase tracking
     ├── wire.rs             # Frame splitting, decompression, handshake fields
+    ├── dump.rs             # `peel dump`: text and JSON output
+    ├── view.rs             # `peel view`: local server for the embedded viewer
+    └── status.rs           # Log lines and capture's live status line
+peel-decode/
+└── src/
+    ├── lib.rs              # Loading a whole trace
     ├── names.rs            # Bridges trace types to pomme-protocol's tables
-    ├── dump.rs             # `peel dump`: tick grouping, text and JSON output
-    └── status.rs           # Capture's log and live status line
+    └── timeline.rs         # Tick grouping, shared by dump and the viewer
+peel-wasm/
+└── src/lib.rs              # The viewer's WebAssembly API
+viewer/
+└── src/
+    ├── App.tsx             # Opening traces, filtering, selection
+    ├── components/         # Summary, filters, timeline, packet detail, drop zone
+    └── lib/                # The wasm wrapper, types and formatting
 peel-trace/
 └── src/
     ├── lib.rs              # Trace types, errors, format version

@@ -1,5 +1,5 @@
-//! Capture's stderr output: log lines, plus one status line redrawn in place
-//! when stderr is a terminal.
+//! Peel's stderr output: log lines, plus capture's status line, redrawn in
+//! place when stderr is a terminal.
 
 use std::fmt::Display;
 use std::io::{self, IsTerminal};

@@ -18,8 +18,8 @@ when.
 It is the sister project of the [Pomme client](https://github.com/PommeMC/Client)
 and is built on that repo's `pomme-protocol` crate.
 
-> **Status:** early. Capturing and dumping traces work today; diffing against
-> vanilla and the web viewer are next.
+> **Status:** early. Capturing, dumping and viewing traces work today; diffing
+> against vanilla is next.
 
 ## Features
 
@@ -27,13 +27,14 @@ and is built on that repo's `pomme-protocol` crate.
 - **Every version from 1.20 through 26.3**: packet names, phases and compression are followed per version from tables generated from the decompiled game, including the configuration phase (1.20.2+)
 - **Tick-accurate timelines**: from 1.21.2 (protocol 768) packets are grouped by the client's own tick marker, `client_tick_end`; older versions are grouped by timestamp and clearly labelled approximate
 - **Small, shareable traces**: raw packets in a compressed file; chunk data compresses about 7x. Names and fields are computed when a trace is read, so improvements to Peel apply to old traces too
+- **Web viewer**: a filterable tick timeline with a byte-level view of every packet, opened with `peel view`. Traces are decoded in your browser by the same Rust code as `peel dump`, and never uploaded
 - **Text or JSON output** for reading traces yourself or scripting against them
 
 Planned:
 
 - **Diff against vanilla**: compare a trace with reference traces captured from the real vanilla client
 - **Field decoders**: every packet's fields, ported from the vanilla codecs
-- **Web viewer**: a timeline and diff UI, both served locally by `peel view` and hosted online. Traces are parsed entirely in your browser and never uploaded
+- **Hosted viewer**: the same viewer on the Pomme website, for opening a shared trace with nothing installed
 
 ## Usage
 
@@ -78,11 +79,23 @@ Each line shows the time since the session started, the direction, the phase,
 the packet's name and id, and its uncompressed length. Add `--json` for one
 JSON document you can script against.
 
+### View a trace
+
+```bash
+peel view walk.trace
+```
+
+Opens the trace in your browser: a timeline grouped by tick, filters by packet
+name, direction and phase, and the raw bytes of any packet you select. Step
+through packets with the arrow keys. The viewer is served from inside `peel`
+on `127.0.0.1` and works offline; stop it with Ctrl+C.
+
 ## Privacy and scope
 
 - **Traces are private data.** They contain usernames, chat and positions, so
   only share them with people you trust. Peel makes no network connections of
-  its own; the proxy only forwards the traffic you send through it.
+  its own: the proxy only forwards the traffic you send through it, and
+  `peel view` only serves your own machine.
 - **Offline-mode servers only.** Peel never handles Microsoft or Mojang
   credentials, access tokens or session keys. If a server asks for encryption,
   Peel stops and tells you why.
@@ -92,14 +105,23 @@ JSON document you can script against.
 ## Architecture
 
 ```bash
-peel/         # The `peel` binary (crate `pomme-peel`): capture proxy, dump
+peel/         # The `peel` binary (crate `pomme-peel`): capture proxy, dump, view
 peel-trace/   # The trace file format: types, reader, writer. Shared with Pomme's built-in recorder
+peel-decode/  # Packet names and the tick timeline, shared by `peel dump` and the viewer
+peel-wasm/    # The viewer's WebAssembly bridge to peel-decode
+viewer/       # The web viewer (React, TypeScript, Vite)
 ```
 
 ## Building
 
-Peel is written in Rust. The toolchain is pinned in `rust-toolchain.toml`, and
-rustup picks it up automatically.
+Peel is written in Rust, with a TypeScript web viewer. You need:
+
+- [rustup](https://rustup.rs/); the pinned toolchain and WebAssembly target in
+  `rust-toolchain.toml` install automatically
+- [just](https://github.com/casey/just), [Node.js](https://nodejs.org/) and
+  [pnpm](https://pnpm.io/)
+- `wasm-bindgen-cli` at exactly the `wasm-bindgen` version pinned in
+  `Cargo.toml`: `cargo install wasm-bindgen-cli --version =<version> --locked`
 
 `pomme-protocol` is not on crates.io yet, so for now you also need a checkout of
 the Pomme client next to Peel, and a local override pointing cargo at it:
@@ -115,10 +137,13 @@ printf '[patch.crates-io]\npomme-protocol = { path = "../Client/pomme-protocol" 
 `.cargo/config.toml` is gitignored; never commit it. Then:
 
 ```bash
-cargo build --release
+pnpm install
+just build --release
 ```
 
-The binary is `target/release/peel` (`peel.exe` on Windows).
+`just build` builds the viewer and embeds it in the binary, which is
+`target/release/peel` (`peel.exe` on Windows). A plain `cargo build` also works,
+but `peel view` then shows a page saying the viewer wasn't built.
 
 ## Contributing
 
