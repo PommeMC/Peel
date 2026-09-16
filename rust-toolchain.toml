@@ -1,0 +1,5 @@
+[toolchain]
+# Same pin as the Pomme client so pomme-protocol builds identically in both.
+# Bump them together.
+channel = "nightly-2026-08-21"
+components = ["clippy", "rustfmt", "rust-analyzer", "rust-src"]

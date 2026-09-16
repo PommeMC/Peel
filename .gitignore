@@ -1,0 +1,5 @@
+/target
+# Local pomme-protocol patch; never commit it.
+/.cargo/config.toml
+# Captures carry usernames, chat and positions.
+*.trace

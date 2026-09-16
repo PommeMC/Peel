@@ -1,0 +1,10 @@
+[package]
+name = "peel-trace"
+description = "The Peel trace file format: raw Minecraft protocol frames with their phase, direction and timing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }

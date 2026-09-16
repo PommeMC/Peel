@@ -1,0 +1,20 @@
+[package]
+name = "pomme-peel"
+description = "Minecraft packet analyser: capture a session, dump it tick by tick, diff it against vanilla."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "peel"
+path = "src/main.rs"
+
+[dependencies]
+peel-trace = { workspace = true }
+pomme-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+flate2 = { workspace = true }
+anyhow = { workspace = true }
