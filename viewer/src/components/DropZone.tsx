@@ -9,29 +9,35 @@ interface Props {
 export default function DropZone({ onChoose, error, loading }: Props) {
   return (
     <main className="landing">
-      <div className="landing-card">
-        <Brand large />
-        <p className="landing-tagline">Minecraft packets, tick by tick.</p>
-        <button
-          className="drop-target"
-          onClick={onChoose}
-          disabled={loading !== null}
-        >
-          {loading ? (
-            <span className="drop-title">Opening {loading}…</span>
-          ) : (
-            <>
-              <span className="drop-title">Drop a .trace file here</span>
-              <span className="drop-hint">or click to choose one</span>
-            </>
-          )}
-        </button>
+      <nav className="landing-nav">
+        <Brand />
+      </nav>
+      <section className="hero">
+        <h1 className="hero-title fade-up delay-1">
+          Packets,
+          <br />
+          <span className="accent">tick by tick.</span>
+        </h1>
+        <p className="hero-lede fade-up delay-2">
+          Open a trace recorded with <code>peel capture</code> to see every
+          packet between client and server, grouped by game tick, down to the
+          byte.
+        </p>
+        <div className="drop-card glass fade-up delay-3">
+          <span className="drop-title">Drop a .trace file anywhere</span>
+          <button
+            className="button button-primary"
+            onClick={onChoose}
+            disabled={loading !== null}
+          >
+            {loading ? `Opening ${loading}…` : "Choose a trace"}
+          </button>
+        </div>
         {error && <p className="landing-error">{error}</p>}
         <p className="landing-privacy">
-          Traces are read in your browser and never uploaded. Record one with{" "}
-          <code>peel capture</code>.
+          Traces are read in your browser and never uploaded.
         </p>
-      </div>
+      </section>
     </main>
   );
 }

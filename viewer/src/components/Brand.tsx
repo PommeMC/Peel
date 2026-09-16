@@ -1,6 +1,6 @@
-export default function Brand({ large = false }: { large?: boolean }) {
+export default function Brand() {
   return (
-    <div className={large ? "brand brand-large" : "brand"}>
+    <div className="brand">
       <img src="./favicon.svg" alt="" />
       <span>Peel</span>
     </div>
