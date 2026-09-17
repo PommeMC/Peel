@@ -29,6 +29,17 @@ const OFFLINE_ONLY: &str = "the server requested encryption, so it is running wi
     Mojang credentials or session keys. Set online-mode=false in the test server's \
     server.properties and connect again.";
 
+fn unsupported(protocol: i32) -> String {
+    format!(
+        "protocol {protocol} isn't a version this build of Peel supports, so it can't tell an \
+         online-mode login from an offline one. Update Peel, or capture a supported version."
+    )
+}
+
+/// Batches of records waiting to be written. Bounded so a fast server can't
+/// outrun the recorder into memory the capture never gets back.
+const PENDING_BATCHES: usize = 64;
+
 /// How often the recorder flushes the trace and redraws the status line. A
 /// killed capture loses at most this much.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
@@ -155,7 +166,7 @@ struct Connection<W> {
 }
 
 struct Recording<W> {
-    records: mpsc::Sender<Vec<Record>>,
+    records: mpsc::SyncSender<Vec<Record>>,
     recorder: JoinHandle<io::Result<W>>,
 }
 
@@ -245,7 +256,14 @@ impl<W: Write + Send + 'static> Connection<W> {
                     "{}: {reason}; forwarding continues without recording",
                     self.peer
                 ),
-                Notice::EncryptionRequested => forward = false,
+                Notice::EncryptionRequested => {
+                    forward = false;
+                    self.failure = Some(anyhow!(OFFLINE_ONLY));
+                }
+                Notice::Unsupported(protocol) => {
+                    forward = false;
+                    self.failure = Some(anyhow!(unsupported(protocol)));
+                }
             }
         }
         if let Some(recording) = &self.recording
@@ -253,9 +271,6 @@ impl<W: Write + Send + 'static> Connection<W> {
         {
             // A failed send means the recorder already stopped and said why.
             let _ = recording.records.send(fed.records);
-        }
-        if !forward {
-            self.failure = Some(anyhow!(OFFLINE_ONLY));
         }
         forward
     }
@@ -284,7 +299,7 @@ impl<W: Write + Send + 'static> Connection<W> {
             recorder: format!("peel {}", env!("CARGO_PKG_VERSION")),
         };
         let marker = TickMarker::for_protocol(protocol);
-        let (records, received) = mpsc::channel();
+        let (records, received) = mpsc::sync_channel(PENDING_BATCHES);
         let recorder = thread::spawn(move || record(open, &header, marker, &received));
         self.recording = Some(Recording { records, recorder });
     }
@@ -334,7 +349,7 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use peel_decode::test_util::{latest, named};
+    use peel_decode::test_util::{latest, named, packet};
     use peel_trace::{Phase, TraceReader};
     use pomme_protocol::PacketTable;
     use pomme_protocol::version::LATEST;
@@ -590,6 +605,36 @@ mod tests {
             (last.direction, last.phase, last.frame.as_slice()),
             (Direction::Clientbound, Phase::Login, &encryption[1..])
         );
+    }
+
+    #[test]
+    fn an_unsupported_protocol_stops_capture() {
+        let Proxy {
+            proxy,
+            server,
+            handle,
+            ..
+        } = start();
+        let unknown = 12_345;
+        assert!(PacketTable::for_protocol(unknown).is_none());
+
+        let mut client = TcpStream::connect(proxy).unwrap();
+        let (mut upstream, _) = server.accept().unwrap();
+        let mut request = frame(&packet(0, &intention(unknown, LOGIN)), None);
+        request.extend(frame(&packet(0, b"\x06player"), None));
+        client.write_all(&request).unwrap();
+        expect_bytes(&mut upstream, &request);
+
+        upstream
+            .write_all(&frame(&packet(2, &[0; 4]), None))
+            .unwrap();
+        assert_closed(&mut client);
+        assert_closed(&mut upstream);
+        drop((client, upstream));
+
+        let (_, failure) = handle.join().unwrap().unwrap();
+        let err = failure.unwrap();
+        assert!(err.to_string().contains("supported version"), "{err}");
     }
 
     #[test]

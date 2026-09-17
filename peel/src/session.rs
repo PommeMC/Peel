@@ -20,6 +20,9 @@ pub enum Notice {
     Handshake { intention: Intention, known: bool },
     /// The server asked for encryption: it runs in online mode.
     EncryptionRequested,
+    /// The connection speaks a protocol this build has no tables for, so
+    /// Peel can't tell an encryption request from any other login packet.
+    Unsupported(i32),
     /// Tracking stopped for the rest of the connection.
     Untracked(String),
 }
@@ -82,9 +85,14 @@ impl Session {
     }
 
     fn untrack(&mut self, fed: &mut Fed, reason: String) {
+        self.stop(fed, Notice::Untracked(reason));
+    }
+
+    /// Stops following the connection, saying why.
+    fn stop(&mut self, fed: &mut Fed, notice: Notice) {
         self.tracking = false;
         self.splitters = Default::default();
-        fed.notices.push(Notice::Untracked(reason));
+        fed.notices.push(notice);
     }
 
     fn on_frame(
@@ -138,14 +146,7 @@ impl Session {
 
         let Some(table) = table else {
             if (direction, phase) == (Direction::Clientbound, Phase::Login) {
-                self.untrack(
-                    fed,
-                    format!(
-                        "protocol {protocol} is not a version this build of Peel supports, so \
-                         its compression and phase changes can't be followed past the first \
-                         clientbound login packet"
-                    ),
-                );
+                self.stop(fed, Notice::Unsupported(protocol));
             }
             return Ok(());
         };
@@ -350,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_protocol_records_until_uncertain() {
+    fn unknown_protocol_stops_at_the_login_reply() {
         let mut feed = unknown_protocol_session();
 
         let fed = feed(Sb, 0, &intention(UNKNOWN, LOGIN));
@@ -363,7 +364,7 @@ mod tests {
         assert_eq!(fed.records[0].phase, Phase::Login);
         let fed = feed(Cb, 3, &[0]);
         assert_eq!(fed.records.len(), 1);
-        assert!(matches!(fed.notices.as_slice(), [Notice::Untracked(_)]));
+        assert!(matches!(fed.notices.as_slice(), [Notice::Unsupported(_)]));
         assert!(feed(Cb, 2, &[0; 4]).records.is_empty());
     }
 
