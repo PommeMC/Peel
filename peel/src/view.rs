@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -33,6 +34,13 @@ pub struct Args {
     #[arg(long)]
     no_open: bool,
 }
+
+/// How long a request may take before the connection is dropped, so a
+/// stalled peer can't hold a thread.
+const TIMEOUT: Duration = Duration::from_secs(5);
+/// The longest request line or header, and how many headers are read.
+const MAX_HEADER_BYTES: u64 = 8 << 10;
+const MAX_HEADERS: usize = 64;
 
 /// The trace files being served.
 struct Served {
@@ -61,10 +69,11 @@ pub fn run(args: Args) -> Result<()> {
         note!("couldn't open a browser ({err}); open the address above yourself");
     }
 
+    let port = listener.local_addr()?.port();
     let served = Arc::new(Served { trace, reference });
     for stream in listener.incoming() {
         let served = served.clone();
-        thread::spawn(move || stream.and_then(|stream| respond(stream, &served)));
+        thread::spawn(move || stream.and_then(|stream| respond(stream, &served, port)));
     }
     Ok(())
 }
@@ -79,13 +88,21 @@ fn file_name(path: &Path) -> Result<String> {
 
 /// Answers one HTTP/1.1 request: `GET /trace` and `GET /reference` return
 /// the traces, other `GET`s an embedded viewer file.
-fn respond(mut stream: TcpStream, served: &Served) -> io::Result<()> {
+fn respond(mut stream: TcpStream, served: &Served, port: u16) -> io::Result<()> {
+    stream.set_read_timeout(Some(TIMEOUT))?;
+    stream.set_write_timeout(Some(TIMEOUT))?;
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    read_line(&mut reader, &mut request_line)?;
+    let mut host = String::new();
     let mut header = String::new();
-    while reader.read_line(&mut header)? > 2 {
-        header.clear();
+    for _ in 0..MAX_HEADERS {
+        if read_line(&mut reader, &mut header)? <= 2 {
+            break;
+        }
+        if let Some(value) = header_value(&header, "host") {
+            host = value;
+        }
     }
 
     let mut parts = request_line.split_whitespace();
@@ -94,30 +111,65 @@ fn respond(mut stream: TcpStream, served: &Served) -> io::Result<()> {
         .next()
         .and_then(|target| target.split(['?', '#']).next())
         .unwrap_or("/");
-    let (status, content_type, body): (&str, &str, &[u8]) = match (method, path) {
-        (Some("GET"), "/trace") => ("200 OK", "application/octet-stream", &served.trace),
-        (Some("GET"), "/reference") if served.reference.is_some() => (
-            "200 OK",
-            "application/octet-stream",
-            served.reference.as_deref().unwrap_or_default(),
-        ),
-        (Some("GET"), path) => match asset(path) {
-            Some((content_type, body)) => ("200 OK", content_type, body),
-            None => ("404 Not Found", "text/plain; charset=utf-8", b"not found"),
-        },
-        _ => (
-            "405 Method Not Allowed",
+    let (status, content_type, body): (&str, &str, &[u8]) = if !ours(&host, port) {
+        (
+            "403 Forbidden",
             "text/plain; charset=utf-8",
-            b"GET only",
-        ),
+            b"this address is not the one Peel serves",
+        )
+    } else {
+        match (method, path) {
+            (Some("GET"), "/trace") => ("200 OK", "application/octet-stream", &served.trace),
+            (Some("GET"), "/reference") if served.reference.is_some() => (
+                "200 OK",
+                "application/octet-stream",
+                served.reference.as_deref().unwrap_or_default(),
+            ),
+            (Some("GET"), path) => match asset(path) {
+                Some((content_type, body)) => ("200 OK", content_type, body),
+                None => ("404 Not Found", "text/plain; charset=utf-8", b"not found"),
+            },
+            _ => (
+                "405 Method Not Allowed",
+                "text/plain; charset=utf-8",
+                b"GET only",
+            ),
+        }
     };
     write!(
         stream,
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+         Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
+         X-Frame-Options: DENY\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)
+}
+
+/// One line of the request, refusing one longer than a browser ever sends
+/// so a local process can't grow the buffer without end.
+fn read_line(reader: &mut impl BufRead, line: &mut String) -> io::Result<usize> {
+    line.clear();
+    let read = io::Read::take(&mut *reader, MAX_HEADER_BYTES).read_line(line)?;
+    if !line.ends_with('\n') && read as u64 == MAX_HEADER_BYTES {
+        return Err(io::Error::other("request header is too long"));
+    }
+    Ok(read)
+}
+
+fn header_value(header: &str, name: &str) -> Option<String> {
+    let (field, value) = header.split_once(':')?;
+    field
+        .eq_ignore_ascii_case(name)
+        .then(|| value.trim().to_string())
+}
+
+/// Whether `Host` is the address Peel serves. Another name pointing at
+/// 127.0.0.1 means a web page is reaching the local server through its own
+/// domain, which is how a site would read someone's trace.
+fn ours(host: &str, port: u16) -> bool {
+    let host = host.to_ascii_lowercase();
+    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
 }
 
 fn asset(path: &str) -> Option<(&'static str, &'static [u8])> {
@@ -179,11 +231,22 @@ mod tests {
     use super::*;
 
     fn get(path: &str, served: Served) -> (String, Vec<u8>) {
+        request(path, served, |addr| format!("Host: {addr}\r\n"))
+    }
+
+    /// One request with the headers `headers` builds from our own address.
+    fn request(
+        path: &str,
+        served: Served,
+        headers: impl FnOnce(&str) -> String,
+    ) -> (String, Vec<u8>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = thread::spawn(move || respond(listener.accept().unwrap().0, &served));
+        let port = addr.port();
+        let server = thread::spawn(move || respond(listener.accept().unwrap().0, &served, port));
         let mut client = TcpStream::connect(addr).unwrap();
-        write!(client, "GET {path} HTTP/1.1\r\nHost: {addr}\r\n\r\n").unwrap();
+        let headers = headers(&addr.to_string());
+        write!(client, "GET {path} HTTP/1.1\r\n{headers}\r\n").unwrap();
         let mut response = Vec::new();
         client.read_to_end(&mut response).unwrap();
         server.join().unwrap().unwrap();
@@ -222,6 +285,52 @@ mod tests {
             let (head, _) = get(path, served(None));
             assert!(head.starts_with("HTTP/1.1 404"), "{path}: {head}");
         }
+    }
+
+    /// A page on another domain can point it at 127.0.0.1 and reach this
+    /// server, so anything but our own address is refused.
+    #[test]
+    fn only_our_own_host_is_served() {
+        let (head, _) = request("/trace", served(None), |_| {
+            "Host: evil.example
+"
+            .to_string()
+        });
+        assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+
+        let (head, body) = request("/trace", served(None), |addr| {
+            format!(
+                "Host: localhost:{}
+",
+                addr.rsplit(':').next().unwrap()
+            )
+        });
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert_eq!(body, b"PEEL-trace");
+
+        let (head, _) = get("/trace", served(None));
+        assert!(head.contains("X-Content-Type-Options: nosniff"), "{head}");
+        assert!(head.contains("X-Frame-Options: DENY"), "{head}");
+    }
+
+    #[test]
+    fn a_header_longer_than_any_browser_sends_is_refused() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
+        let served = served(None);
+        let server = thread::spawn(move || respond(listener.accept().unwrap().0, &served, port));
+        let mut client = TcpStream::connect(addr).unwrap();
+        write!(
+            client,
+            "GET /trace HTTP/1.1
+Host: {addr}
+X: "
+        )
+        .unwrap();
+        let long = "x".repeat(MAX_HEADER_BYTES as usize + 1);
+        let _ = client.write_all(long.as_bytes());
+        assert!(server.join().unwrap().is_err());
     }
 
     #[test]
