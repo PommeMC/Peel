@@ -2,6 +2,7 @@ use peel_trace::{Direction, Header, Phase, Record};
 use pomme_protocol::{PacketTable, ProtocolVersion};
 use serde::Serialize;
 
+use crate::fields::{self, Decoded};
 use crate::names::{self, TickMarker};
 
 /// Width of the approximate grouping windows used below protocol 768: one
@@ -58,6 +59,9 @@ pub struct Packet {
     pub name: Option<&'static str>,
     /// The uncompressed frame length.
     pub length: usize,
+    /// Filled by [`Timeline::decode_fields`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Decoded>,
 }
 
 impl<'a> Timeline<'a> {
@@ -75,6 +79,18 @@ impl<'a> Timeline<'a> {
             grouping,
             groups,
         }
+    }
+
+    /// Decodes every packet's fields from the `records` the timeline was
+    /// built from.
+    pub fn decode_fields(&mut self, records: &[Record]) {
+        for packet in self.groups.iter_mut().flat_map(|g| &mut g.packets) {
+            packet.fields = Some(fields::decode(&records[packet.index]));
+        }
+    }
+
+    pub fn packets(&self) -> impl Iterator<Item = &Packet> {
+        self.groups.iter().flat_map(|g| &g.packets)
     }
 }
 
@@ -151,6 +167,7 @@ impl Packet {
                 names::packet_name(table, record.phase, record.direction, record.packet_id)
             }),
             length: record.frame.len(),
+            fields: None,
         }
     }
 }

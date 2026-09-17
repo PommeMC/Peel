@@ -5,6 +5,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result, bail, ensure};
 use flate2::read::ZlibDecoder;
+use peel_decode::fields::reader::Reader;
 use pomme_protocol::wire::read_varint;
 
 /// `Varint21FrameDecoder`: the frame length prefix is at most 3 bytes.
@@ -102,11 +103,15 @@ pub struct Intention {
 /// `ClientIntentionPacket` fields: protocol varint, host string, u16 port,
 /// intent varint.
 pub fn parse_intention(body: &[u8]) -> Result<Intention> {
-    let mut pos = 0;
-    let protocol = read_varint(body, &mut pos).context("truncated handshake")? as i32;
-    let host_len = read_varint(body, &mut pos).context("truncated handshake")?;
-    pos += host_len as usize + 2;
-    let intent = match read_varint(body, &mut pos).context("truncated handshake")? {
+    let mut reader = Reader::new(body);
+    let mut read = || -> Result<(i32, i32)> {
+        let protocol = reader.var_int()?;
+        reader.byte_array()?;
+        reader.u16()?;
+        Ok((protocol, reader.var_int()?))
+    };
+    let (protocol, intent) = read().context("truncated handshake")?;
+    let intent = match intent {
         1 => Intent::Status,
         2 => Intent::Login,
         3 => Intent::Transfer,
@@ -117,7 +122,9 @@ pub fn parse_intention(body: &[u8]) -> Result<Intention> {
 
 /// `ClientboundLoginCompressionPacket` fields: the threshold varint.
 pub fn read_threshold(body: &[u8]) -> Result<i32> {
-    Ok(read_varint(body, &mut 0).context("truncated login_compression")? as i32)
+    Reader::new(body)
+        .var_int()
+        .context("truncated login_compression")
 }
 
 #[cfg(test)]

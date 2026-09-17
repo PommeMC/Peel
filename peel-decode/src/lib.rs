@@ -1,7 +1,8 @@
-//! Turns trace records into what users see: packet names, phases and the
-//! tick timeline. Shared by `peel dump` and the browser viewer, so both always
-//! agree.
+//! Turns trace records into what users see: packet names, phases, the tick
+//! timeline and decoded fields. Shared by `peel dump` and the browser viewer,
+//! so both always agree.
 
+pub mod fields;
 pub mod names;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
@@ -45,6 +46,11 @@ pub fn load(trace: impl Read) -> peel_trace::Result<Loaded> {
 impl Loaded {
     pub fn timeline(&self) -> Timeline<'_> {
         Timeline::build(self.format_version, &self.header, &self.records)
+    }
+
+    /// The fields of the record at `index`.
+    pub fn fields(&self, index: usize) -> Option<fields::Decoded> {
+        self.records.get(index).map(fields::decode)
     }
 
     /// Why reading stopped before the end of the trace, if it did.

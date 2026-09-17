@@ -13,6 +13,4 @@ test-util = []
 peel-trace = { workspace = true }
 pomme-protocol = { workspace = true }
 serde = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }

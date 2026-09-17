@@ -29,6 +29,15 @@ impl Trace {
         self.loaded.records.get(index).map(|r| r.frame.clone())
     }
 
+    /// The decoded fields of the record at `index`, as JSON.
+    pub fn fields(&self, index: usize) -> Result<Option<String>, JsError> {
+        Ok(self
+            .loaded
+            .fields(index)
+            .map(|decoded| serde_json::to_string(&decoded))
+            .transpose()?)
+    }
+
     pub fn warning(&self) -> Option<String> {
         self.loaded.warning()
     }

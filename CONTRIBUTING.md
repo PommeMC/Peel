@@ -72,6 +72,9 @@ online-mode interception. Beyond those:
 - **Every decoder gets byte-exact tests**, one per protocol range where its
   layout differs. A packet without a decoder still shows its name and raw
   bytes; never guess at fields
+- **Decoder protocol ranges come from diffing the codec across the reference
+  versions.** Name each boundary with a version constant in
+  `peel-decode/src/fields/packets/mod.rs`
 - **Version support comes only from `pomme-protocol`.** Never add or patch
   packet tables in Peel
 
@@ -127,7 +130,12 @@ peel-decode/
 └── src/
     ├── lib.rs              # Loading a whole trace
     ├── names.rs            # Bridges trace types to pomme-protocol's tables
-    └── timeline.rs         # Tick grouping, shared by dump and the viewer
+    ├── timeline.rs         # Tick grouping, shared by dump and the viewer
+    └── fields/
+        ├── mod.rs          # Decoder lookup by phase, direction, name and protocol
+        ├── reader.rs       # Vanilla's primitive types
+        ├── decoder.rs      # Records each field's value and byte range
+        └── packets/        # One module per part of the protocol, plus NBT and text components
 peel-wasm/
 └── src/lib.rs              # The viewer's WebAssembly API
 viewer/

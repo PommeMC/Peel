@@ -732,6 +732,52 @@ button {
   font-size: 13px;
 }
 
+.field-tree,
+.field-tree ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.field-tree {
+  margin-bottom: 22px;
+  font: 12px/1.5 var(--mono);
+}
+
+.field-tree ul {
+  padding-left: var(--run-indent);
+  border-left: 1px solid var(--border-subtle);
+  margin-left: 4px;
+}
+
+.field-tree summary {
+  cursor: pointer;
+}
+
+.field-tree summary::marker {
+  color: var(--faint);
+}
+
+.field-row {
+  display: inline-flex;
+  gap: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.field-row:hover {
+  background: var(--accent-soft);
+}
+
+.field-name {
+  color: var(--muted);
+}
+
+.field-value {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 .detail-note {
   margin: 0 0 8px;
   color: var(--warning);

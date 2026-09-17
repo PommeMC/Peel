@@ -22,6 +22,21 @@ export interface Group {
   packets: Packet[];
 }
 
+/** Mirrors `peel_decode::fields::Field`. */
+export interface Field {
+  name: string;
+  value?: string;
+  start: number;
+  end: number;
+  children?: Field[];
+}
+
+/** Mirrors `peel_decode::fields::Decoded`. */
+export type Decoded =
+  | { status: "fields"; fields: Field[] }
+  | { status: "no_decoder" }
+  | { status: "failed"; fields: Field[]; error: string; at: number };
+
 /** Mirrors `peel_decode::Timeline`, the shape of `peel dump --json`. */
 export interface Timeline {
   format_version: number;
@@ -39,6 +54,7 @@ export interface LoadedTrace {
   timeline: Timeline;
   warning: string | null;
   frame(index: number): Uint8Array | undefined;
+  fields(index: number): Decoded | undefined;
 }
 
 let wasmReady: Promise<unknown> | undefined;
@@ -59,6 +75,10 @@ export async function openTrace(
     timeline,
     warning: trace.warning() ?? null,
     frame: (index) => trace.frame(index),
+    fields: (index) => {
+      const json = trace.fields(index);
+      return json === undefined ? undefined : JSON.parse(json);
+    },
   };
 }
 

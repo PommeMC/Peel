@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ASCII_COLUMN,
-  HEX_COLUMN,
   hexLines,
   hexLineText,
+  hexSegments,
   hexText,
   packetTime,
   preciseTime,
@@ -36,7 +35,7 @@ describe("hex dump", () => {
     const lines = hexLines(data);
     expect(lines).toHaveLength(2);
     expect(lines[1]).toEqual({
-      offset: "000010",
+      start: 16,
       hex: ["51", "52", "53", "54"],
       ascii: ["Q", "R", "S", "T"],
     });
@@ -45,11 +44,30 @@ describe("hex dump", () => {
     );
   });
 
-  it("places the hex and ASCII columns where the id highlight expects", () => {
-    const [line] = hexLines(data);
-    const text = hexLineText(line);
-    expect(text.slice(HEX_COLUMN, HEX_COLUMN + 5)).toBe("41 42");
-    expect(text.slice(ASCII_COLUMN, ASCII_COLUMN + 2)).toBe("AB");
+  it("marks a range in both columns, across lines", () => {
+    const lines = hexLines(data);
+    const segments = hexSegments(lines, { start: 15, end: 18 });
+    expect(segments.map((s) => s.text).join("")).toBe(
+      lines.map(hexLineText).join("\n"),
+    );
+    expect(segments.filter((s) => s.marked).map((s) => s.text)).toEqual([
+      "50",
+      "P",
+      "51 52",
+      "QR",
+    ]);
+  });
+
+  it("leaves the dump unmarked for an empty or out of range range", () => {
+    const lines = hexLines(data);
+    for (const range of [
+      { start: 3, end: 3 },
+      { start: 40, end: 44 },
+    ]) {
+      expect(hexSegments(lines, range)).toEqual([
+        { text: lines.map(hexLineText).join("\n"), marked: false },
+      ]);
+    }
   });
 
   it("shows non-printable bytes as dots and copies plain hex", () => {

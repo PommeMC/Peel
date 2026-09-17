@@ -73,24 +73,35 @@ export function varintLength(data: Uint8Array): number {
 }
 
 export interface HexLine {
-  offset: string;
+  start: number;
   hex: string[];
   ascii: string[];
+}
+
+/** Bytes `start` up to, not including, `end`. */
+export interface ByteRange {
+  start: number;
+  end: number;
+}
+
+export interface HexSegment {
+  text: string;
+  marked: boolean;
 }
 
 /** Width of a full line's hex column: 16 bytes, space separated. */
 const HEX_WIDTH = 47;
 /** Where {@link hexLineText}'s hex and ASCII columns start. */
-export const HEX_COLUMN = 8;
-export const ASCII_COLUMN = HEX_COLUMN + HEX_WIDTH + 2;
+const HEX_COLUMN = 8;
+const ASCII_COLUMN = HEX_COLUMN + HEX_WIDTH + 2;
 
 /** Offset, hex and ASCII columns, 16 bytes per line. */
 export function hexLines(data: Uint8Array): HexLine[] {
   const lines: HexLine[] = [];
-  for (let offset = 0; offset < data.length; offset += 16) {
-    const chunk = data.subarray(offset, offset + 16);
+  for (let start = 0; start < data.length; start += 16) {
+    const chunk = data.subarray(start, start + 16);
     lines.push({
-      offset: offset.toString(16).padStart(6, "0"),
+      start,
       hex: Array.from(chunk, hexByte),
       ascii: Array.from(chunk, (b) =>
         b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : "·",
@@ -101,7 +112,42 @@ export function hexLines(data: Uint8Array): HexLine[] {
 }
 
 export function hexLineText(line: HexLine): string {
-  return `${line.offset}  ${line.hex.join(" ").padEnd(HEX_WIDTH)}  ${line.ascii.join("")}`;
+  const offset = line.start.toString(16).padStart(6, "0");
+  return `${offset}  ${line.hex.join(" ").padEnd(HEX_WIDTH)}  ${line.ascii.join("")}`;
+}
+
+/** The dump's text, split so the bytes in `range` are marked in both the hex
+ * and ASCII columns. */
+export function hexSegments(lines: HexLine[], range: ByteRange): HexSegment[] {
+  const segments: HexSegment[] = [];
+  const push = (text: string, marked: boolean) => {
+    if (!text) return;
+    const last = segments.at(-1);
+    if (last?.marked === marked) last.text += text;
+    else segments.push({ text, marked });
+  };
+  lines.forEach((line, i) => {
+    if (i > 0) push("\n", false);
+    const text = hexLineText(line);
+    const from = Math.max(range.start - line.start, 0);
+    const to = Math.min(range.end - line.start, line.hex.length);
+    if (from >= to) {
+      push(text, false);
+      return;
+    }
+    const cuts = [
+      0,
+      HEX_COLUMN + from * 3,
+      HEX_COLUMN + to * 3 - 1,
+      ASCII_COLUMN + from,
+      ASCII_COLUMN + to,
+      text.length,
+    ];
+    for (let c = 0; c + 1 < cuts.length; c++) {
+      push(text.slice(cuts[c], cuts[c + 1]), c % 2 === 1);
+    }
+  });
+  return segments;
 }
 
 /** Space-separated hex, for copying. */
