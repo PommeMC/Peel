@@ -15,6 +15,7 @@ the differences in setup too.
 | Version | Scenarios                                                   | Captured   |
 | ------- | ----------------------------------------------------------- | ---------- |
 | 26.3    | walking, sprint-jumping, combat, building, inventory-use    | 2026-09-17 |
+| 26.2    | walking, sprint-jumping, combat, building, inventory-use    | 2026-09-17 |
 
 ## Setup
 
