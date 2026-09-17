@@ -7,3 +7,5 @@ node_modules/
 /.cargo/config.toml
 # Captures carry usernames, chat and positions.
 *.trace
+# Reference traces are vanilla captures as the fixed offline player `Player`.
+!/fixtures/**/*.trace

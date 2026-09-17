@@ -1,0 +1,4 @@
+onboardAccessibility:false
+tutorialStep:none
+skipMultiplayerWarning:true
+joinedFirstServer:true
