@@ -143,7 +143,13 @@ Vanilla traces to compare against are in [`fixtures/`](./fixtures/README.md).
   from sending them anywhere.
 - **Offline-mode servers only.** Peel never handles Microsoft or Mojang
   credentials, access tokens or session keys. If a server asks for encryption,
-  Peel stops and tells you why.
+  Peel stops and tells you why, and it stops just as readily when it can't
+  read the protocol well enough to recognise that request.
+- **A trace is untrusted input.** Opening one someone sent you is the point of
+  Peel, so reading has limits: records are capped at a packet's maximum
+  length, a whole trace at 256 MB, and fields at 128 levels of nesting.
+  `peel view` serves only its own address and refuses requests from a page
+  that found it under another name.
 - **Observe, never modify.** The proxy never rewrites, injects, drops, reorders
   or delays packets, and can't be used to manipulate traffic.
 
