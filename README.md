@@ -18,8 +18,8 @@ when.
 It is the sister project of the [Pomme client](https://github.com/PommeMC/Client)
 and is built on that repo's `pomme-protocol` crate.
 
-> **Status:** early. Capturing, dumping, viewing and diffing traces work today;
-> vanilla reference traces for each scenario are next.
+> **Status:** early. Capturing, dumping, viewing and diffing traces work today,
+> with vanilla reference traces for 26.3 to diff against.
 
 ## Features
 
@@ -31,11 +31,11 @@ and is built on that repo's `pomme-protocol` crate.
 - **Web viewer**: a filterable tick timeline with a byte-level view of every packet, opened with `peel view`. Hovering a field highlights its bytes. Traces are decoded in your browser by the same Rust code as `peel dump`, and never uploaded
 - **Nothing to install for viewing**: the viewer is also hosted at [peel.pomme.rs](https://peel.pomme.rs), for opening or comparing a shared trace in any browser
 - **Diff against vanilla**: `peel diff` and the viewer line a trace up with a vanilla reference tick by tick and report packets that are missing, extra or out of order, and fields that differ, skipping values that change between any two sessions
+- **Reference traces**: vanilla captures of walking, sprint-jumping, combat, building and inventory use, with the setup and steps to record your own the same way
 - **Text or JSON output** for reading traces yourself or scripting against them
 
 Planned:
 
-- **Reference traces**: vanilla captures of common scenarios to diff against
 - **The last few values**: the ones that wait on registries Peel doesn't have yet
 
 ## Usage
@@ -126,6 +126,8 @@ viewer, or choose **Compare…** with a trace open. At
 trace against vanilla**. Traces from before 1.21.2 have no tick marker, so they
 are compared in 50 ms windows and labelled approximate.
 
+Vanilla traces to compare against are in [`fixtures/`](./fixtures/README.md).
+
 ## Privacy and scope
 
 - **Traces are private data.** They contain usernames, chat and positions, so
@@ -148,6 +150,7 @@ peel-trace/   # The trace file format: types, reader, writer. Shared with Pomme'
 peel-decode/  # Packet names, the tick timeline and field decoders, shared by `peel dump` and the viewer
 peel-wasm/    # The viewer's WebAssembly bridge to peel-decode
 viewer/       # The web viewer (React, TypeScript, Vite)
+fixtures/     # Vanilla reference traces, and the setup to capture them
 ```
 
 ## Building

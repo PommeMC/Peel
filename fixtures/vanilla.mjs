@@ -134,7 +134,8 @@ function client(json) {
     ...game,
     "--offlineDeveloperMode",
   ];
-  spawn(java(json), args, { stdio: "inherit" }).on("exit", (code) =>
-    process.exit(code ?? 1),
+  spawn(java(json), args, { cwd: gameDir, stdio: "inherit" }).on(
+    "exit",
+    (code) => process.exit(code ?? 1),
   );
 }

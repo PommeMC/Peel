@@ -4,8 +4,8 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use peel_decode::fields::{Decoded, Field};
-use peel_decode::{Timeline, names};
+use peel_decode::fields::Field;
+use peel_decode::{FieldCounts, Timeline, names};
 
 use crate::cli::{self, direction_label};
 
@@ -44,16 +44,12 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn field_summary(timeline: &Timeline) -> String {
-    let (mut total, mut decoded, mut partly, mut failed) = (0, 0, 0, 0);
-    for packet in timeline.packets() {
-        total += 1;
-        match packet.fields {
-            Some(Decoded::Fields { .. }) => decoded += 1,
-            Some(Decoded::Partial { .. }) => partly += 1,
-            Some(Decoded::Failed { .. }) => failed += 1,
-            _ => {}
-        }
-    }
+    let FieldCounts {
+        total,
+        decoded,
+        partly,
+        failed,
+    } = timeline.field_counts();
     format!("decoded the fields of {decoded} of {total} packets, {partly} partly, {failed} failed")
 }
 

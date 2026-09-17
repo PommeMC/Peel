@@ -90,6 +90,13 @@ online-mode interception. Beyond those:
 - **Polish is in scope.** Screenshots of the viewer are the project's main
   marketing
 
+### Reference traces
+
+Vanilla reference traces live in `fixtures/`, and
+[`fixtures/README.md`](./fixtures/README.md) explains how to capture them. When
+you recapture or add a scenario, follow its steps exactly and update the README
+in the same PR. `cargo test` checks that every packet in them decodes.
+
 ### Trace format
 
 - **Store raw frames, never decoded fields**, so decoder fixes apply to old
@@ -154,6 +161,12 @@ peel-trace/
     ├── write.rs            # TraceWriter
     ├── read.rs             # TraceReader, every format version
     └── varint.rs           # Varint encoding
+fixtures/
+├── README.md               # Setup, capture steps and scenarios
+├── <version>/              # One reference trace per scenario
+├── server.properties       # The vanilla server's settings for captures
+├── options.txt             # The vanilla client's settings for captures
+└── vanilla.mjs             # Starts the installed vanilla client as `Player`
 ```
 
 ## Reporting Issues

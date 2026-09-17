@@ -65,6 +65,15 @@ impl fmt::Display for GroupKey {
     }
 }
 
+/// How the packets of a timeline decoded, after [`Timeline::decode_fields`].
+#[derive(Default, Debug)]
+pub struct FieldCounts {
+    pub total: usize,
+    pub decoded: usize,
+    pub partly: usize,
+    pub failed: usize,
+}
+
 #[derive(Serialize)]
 pub struct Group {
     pub kind: GroupKind,
@@ -116,6 +125,20 @@ impl<'a> Timeline<'a> {
 
     pub fn packets(&self) -> impl Iterator<Item = &Packet> {
         self.groups.iter().flat_map(|g| &g.packets)
+    }
+
+    pub fn field_counts(&self) -> FieldCounts {
+        let mut counts = FieldCounts::default();
+        for packet in self.packets() {
+            counts.total += 1;
+            match packet.fields {
+                Some(Decoded::Fields { .. }) => counts.decoded += 1,
+                Some(Decoded::Partial { .. }) => counts.partly += 1,
+                Some(Decoded::Failed { .. }) => counts.failed += 1,
+                _ => {}
+            }
+        }
+        counts
     }
 }
 

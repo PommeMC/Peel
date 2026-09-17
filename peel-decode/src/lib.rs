@@ -12,7 +12,9 @@ mod timeline;
 use std::io::Read;
 
 use peel_trace::{Header, Record, TraceReader};
-pub use timeline::{Group, GroupKey, GroupKind, Grouping, Packet, Timeline, WINDOW_US};
+pub use timeline::{
+    FieldCounts, Group, GroupKey, GroupKind, Grouping, Packet, Timeline, WINDOW_US,
+};
 
 /// A whole trace read into memory.
 pub struct Loaded {
