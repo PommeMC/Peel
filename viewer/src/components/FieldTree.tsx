@@ -24,9 +24,7 @@ function FieldItems({
 }: Props & { prefix: string }) {
   return fields.map((field, i) => {
     const path = prefix + field.name;
-    const differs = [...(changed ?? [])].some(
-      (p) => p === path || p.startsWith(`${path}.`),
-    );
+    const differs = changed?.has(path) ?? false;
     const row = (
       <span
         className={`field-row${differs ? " changed" : ""}`}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import DiffView from "./components/DiffView";
+import ErrorBoundary from "./components/ErrorBoundary";
 import DropZone from "./components/DropZone";
 import FileInput from "./components/FileInput";
 import TraceView from "./components/TraceView";
@@ -105,60 +106,62 @@ export default function App() {
         input={referenceInput}
         onFile={(file) => load(setReference, file)}
       />
-      {trace && reference.status === "loaded" ? (
-        <DiffView
-          key={opened}
-          trace={trace}
-          reference={reference.trace}
-          actions={
-            <>
-              <button
-                className="button"
-                onClick={() => {
-                  const url = new URL(window.location.href);
-                  url.searchParams.delete("reference");
-                  history.replaceState(null, "", url);
-                  setReference(EMPTY);
-                }}
-              >
-                Close comparison
-              </button>
-              {openButton}
-            </>
-          }
-        />
-      ) : trace ? (
-        <TraceView
-          key={opened}
-          trace={trace}
-          notice={reference.status === "empty" ? reference.error : null}
-          actions={
-            <>
-              <button
-                className="button"
-                disabled={reference.status === "loading"}
-                title="Compare this trace against a vanilla reference trace"
-                onClick={() => referenceInput.current?.click()}
-              >
-                {reference.status === "loading"
-                  ? `Opening ${reference.fileName}…`
-                  : "Compare…"}
-              </button>
-              {openButton}
-            </>
-          }
-        />
-      ) : (
-        <DropZone
-          onChoose={() => traceInput.current?.click()}
-          onCompare={(file, referenceFile) => {
-            load(setState, file);
-            load(setReference, referenceFile);
-          }}
-          error={state.status === "empty" ? state.error : null}
-          loading={state.status === "loading" ? state.fileName : null}
-        />
-      )}
+      <ErrorBoundary resetKey={opened}>
+        {trace && reference.status === "loaded" ? (
+          <DiffView
+            key={opened}
+            trace={trace}
+            reference={reference.trace}
+            actions={
+              <>
+                <button
+                  className="button"
+                  onClick={() => {
+                    const url = new URL(window.location.href);
+                    url.searchParams.delete("reference");
+                    history.replaceState(null, "", url);
+                    setReference(EMPTY);
+                  }}
+                >
+                  Close comparison
+                </button>
+                {openButton}
+              </>
+            }
+          />
+        ) : trace ? (
+          <TraceView
+            key={opened}
+            trace={trace}
+            notice={reference.status === "empty" ? reference.error : null}
+            actions={
+              <>
+                <button
+                  className="button"
+                  disabled={reference.status === "loading"}
+                  title="Compare this trace against a vanilla reference trace"
+                  onClick={() => referenceInput.current?.click()}
+                >
+                  {reference.status === "loading"
+                    ? `Opening ${reference.fileName}…`
+                    : "Compare…"}
+                </button>
+                {openButton}
+              </>
+            }
+          />
+        ) : (
+          <DropZone
+            onChoose={() => traceInput.current?.click()}
+            onCompare={(file, referenceFile) => {
+              load(setState, file);
+              load(setReference, referenceFile);
+            }}
+            error={state.status === "empty" ? state.error : null}
+            loading={state.status === "loading" ? state.fileName : null}
+          />
+        )}
+      </ErrorBoundary>
       {dragging && <div className="drop-overlay">Drop to open the trace</div>}
     </div>
   );

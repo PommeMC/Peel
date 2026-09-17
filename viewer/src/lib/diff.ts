@@ -95,5 +95,15 @@ export function linePosition(
 
 /** Field paths that differ in a row, for highlighting. */
 export function changedPaths(row: DiffRow): ReadonlySet<string> {
-  return new Set("fields" in row ? row.fields?.map((f) => f.path) : []);
+  const paths = new Set<string>();
+  for (const { path } of ("fields" in row ? row.fields : undefined) ?? []) {
+    // Each field on the way down holds a changed one, so the tree can look a
+    // row up by its own path alone.
+    let prefix = "";
+    for (const name of path.split(".")) {
+      prefix = prefix ? `${prefix}.${name}` : name;
+      paths.add(prefix);
+    }
+  }
+  return paths;
 }

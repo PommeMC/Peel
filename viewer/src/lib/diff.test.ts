@@ -103,6 +103,19 @@ describe("rows", () => {
     ]);
     expect([...changedPaths(changed)]).toEqual(["input"]);
     expect([...changedPaths(missing)]).toEqual([]);
+    // Every field on the way down counts as changed, so the tree can look a
+    // row up by its own path.
+    const nested: DiffRow = {
+      kind: "same",
+      reference: 4,
+      trace: 4,
+      fields: [{ path: "item.components.count", reference: "1", trace: "2" }],
+    };
+    expect([...changedPaths(nested)]).toEqual([
+      "item",
+      "item.components",
+      "item.components.count",
+    ]);
   });
 
   it("locate a finding's first occurrence", () => {

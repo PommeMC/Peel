@@ -20,11 +20,24 @@ interface Props {
 /** Hex dumps beyond this many bytes are cut off; chunk frames can reach megabytes. */
 const DUMP_LIMIT = 64_000;
 
+/** Reads from the WebAssembly core, treating a packet it can't handle as one
+ * with nothing to show. */
+function read<T>(get: () => T | undefined): T | undefined {
+  try {
+    return get();
+  } catch {
+    return undefined;
+  }
+}
+
 /** A record's decoded fields and frame bytes, hovering a field highlighting
  * its bytes. */
 export default function PacketBody({ trace, index, changed }: Props) {
-  const frame = useMemo(() => trace.frame(index), [trace, index]);
-  const decoded = useMemo(() => trace.fields(index), [trace, index]);
+  const frame = useMemo(() => read(() => trace.frame(index)), [trace, index]);
+  const decoded = useMemo(
+    () => read(() => trace.fields(index)),
+    [trace, index],
+  );
   const lines = useMemo(
     () => (frame ? hexLines(frame.subarray(0, DUMP_LIMIT)) : []),
     [frame],
