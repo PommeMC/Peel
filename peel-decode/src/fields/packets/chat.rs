@@ -2,6 +2,7 @@
 
 use peel_trace::Direction::{Clientbound, Serverbound};
 
+use super::super::decoder::set_bits;
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder};
 use super::text::{component, optional_component};
@@ -88,14 +89,22 @@ pub static DECODERS: &[PacketDecoder] = &[
         d.var_int("offset")?;
         Ok(())
     }),
-    game(Serverbound, "chat_session_update", OLDEST..=NEWEST, |d| {
-        d.uuid("session_id")?;
-        d.i64("expires_at")?;
-        d.byte_array("public_key")?;
-        d.byte_array("key_signature")?;
-        Ok(())
-    }),
+    game(
+        Serverbound,
+        "chat_session_update",
+        OLDEST..=NEWEST,
+        chat_session,
+    ),
 ];
+
+/// `RemoteChatSession.Data`: the session id and its profile public key.
+pub fn chat_session(d: &mut Decoder) -> Result<()> {
+    d.uuid("session_id")?;
+    d.i64("expires_at")?;
+    d.byte_array("public_key")?;
+    d.byte_array("key_signature")?;
+    Ok(())
+}
 
 fn text(d: &mut Decoder) -> Result<()> {
     component(d, "text")
@@ -119,15 +128,7 @@ fn filter_mask(d: &mut Decoder) -> Result<()> {
         if d.protocol() >= V26_3 {
             d.byte_array("mask")?;
         } else {
-            d.read(
-                "mask",
-                |r| {
-                    let len = r.count()?;
-                    r.bytes(len * 8, "a bit set")?;
-                    Ok(len)
-                },
-                |&len| super::super::count(len, "long"),
-            )?;
+            d.long_array("mask")?;
         }
     }
     Ok(())
@@ -189,17 +190,7 @@ fn last_seen_update(d: &mut Decoder) -> Result<()> {
         d.read(
             "acknowledged",
             |r| r.bytes(3, "20 bits"),
-            |bytes| {
-                let set: Vec<String> = (0..20)
-                    .filter(|i| bytes[i / 8] >> (i % 8) & 1 == 1)
-                    .map(|i| i.to_string())
-                    .collect();
-                if set.is_empty() {
-                    "none".into()
-                } else {
-                    set.join(", ")
-                }
-            },
+            |bytes| set_bits((0..20).map(|i| bytes[i / 8] >> (i % 8) & 1 == 1)),
         )?;
         if d.protocol() >= V1_21_5 {
             d.i8("checksum")?;

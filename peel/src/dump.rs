@@ -44,16 +44,17 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn field_summary(timeline: &Timeline) -> String {
-    let (mut total, mut decoded, mut failed) = (0, 0, 0);
+    let (mut total, mut decoded, mut partly, mut failed) = (0, 0, 0, 0);
     for packet in timeline.packets() {
         total += 1;
         match packet.fields {
             Some(Decoded::Fields { .. }) => decoded += 1,
+            Some(Decoded::Partial { .. }) => partly += 1,
             Some(Decoded::Failed { .. }) => failed += 1,
             _ => {}
         }
     }
-    format!("decoded the fields of {decoded} of {total} packets, {failed} failed")
+    format!("decoded the fields of {decoded} of {total} packets, {partly} partly, {failed} failed")
 }
 
 fn write_text(timeline: &Timeline, out: &mut impl Write) -> io::Result<()> {
@@ -79,13 +80,11 @@ fn write_text(timeline: &Timeline, out: &mut impl Write) -> io::Result<()> {
                 p.id,
                 p.length
             )?;
-            match &p.fields {
-                Some(Decoded::Fields { fields }) => write_fields(fields, out)?,
-                Some(Decoded::Failed { fields, error, at }) => {
-                    write_fields(fields, out)?;
-                    writeln!(out, "      ! stopped at byte {at}: {error}")?;
+            if let Some(decoded) = &p.fields {
+                write_fields(decoded.fields(), out)?;
+                if let Some(note) = decoded.stop_note() {
+                    writeln!(out, "      ! {note}")?;
                 }
-                _ => {}
             }
         }
     }
@@ -158,7 +157,7 @@ mod tests {
         );
         assert_eq!(
             field_summary(&timeline),
-            "decoded the fields of 1 of 7 packets, 5 failed"
+            "decoded the fields of 1 of 7 packets, 0 partly, 6 failed"
         );
     }
 

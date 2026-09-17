@@ -287,6 +287,20 @@ impl<'a> Decoder<'a> {
         )
     }
 
+    /// `FriendlyByteBuf.readLongArray`: a `VarInt` count, then longs, shown
+    /// by count.
+    pub fn long_array(&mut self, name: impl Into<Name>) -> Result<usize> {
+        self.read(
+            name,
+            |r| {
+                let len = r.count()?;
+                r.bytes(len * 8, "a long array")?;
+                Ok(len)
+            },
+            |&len| count(len, "long"),
+        )
+    }
+
     /// `ByteBufCodecs.BYTE_ARRAY`, shown by length.
     pub fn byte_array(&mut self, name: impl Into<Name>) -> Result<&'a [u8]> {
         self.read(name, Reader::byte_array, |b| count(b.len(), "byte"))
@@ -305,15 +319,7 @@ impl<'a> Decoder<'a> {
         read: impl FnOnce(&mut Reader<'a>) -> Result<T>,
         names: &[&str],
     ) -> Result<T> {
-        self.read(name, read, |&ordinal| {
-            let ordinal = ordinal.into();
-            let label = usize::try_from(ordinal)
-                .ok()
-                .and_then(|i| names.get(i))
-                .filter(|name| !name.is_empty())
-                .unwrap_or(&"unknown");
-            format!("{label} ({ordinal})")
-        })
+        self.read(name, read, |&ordinal| variant_label(names, ordinal.into()))
     }
 
     /// A value read by `read` whose bit `i` is flag `names[i]`; an empty or
@@ -360,6 +366,31 @@ impl<'a> Decoder<'a> {
     pub fn registry_entry(&self, registry: ClientRegistry, id: i32) -> String {
         registry_entry(self.protocol, registry, id)
     }
+}
+
+/// The positions of the set bits, or `none`.
+pub fn set_bits(bits: impl IntoIterator<Item = bool>) -> String {
+    let set: Vec<String> = bits
+        .into_iter()
+        .enumerate()
+        .filter(|&(_, set)| set)
+        .map(|(i, _)| i.to_string())
+        .collect();
+    if set.is_empty() {
+        "none".into()
+    } else {
+        set.join(", ")
+    }
+}
+
+/// `names[ordinal]` and the ordinal; an empty or missing name is unknown.
+pub fn variant_label(names: &[&str], ordinal: i64) -> String {
+    let label = usize::try_from(ordinal)
+        .ok()
+        .and_then(|i| names.get(i))
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&"unknown");
+    format!("{label} ({ordinal})")
 }
 
 fn registry_entry(protocol: i32, registry: ClientRegistry, id: i32) -> String {

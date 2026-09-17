@@ -1,7 +1,7 @@
 //! Network NBT (`NbtIo.writeAnyTag`): a tag type byte, then the payload.
 //! 1.20.1 frames the root like a file, with an empty name after the type.
 
-use super::super::reader::{Reader, Result};
+use super::super::reader::{Error, Reader, Result};
 use super::super::{Decoder, Name, count};
 use super::V1_20_2;
 
@@ -106,10 +106,7 @@ fn string(r: &mut Reader) -> Result<String> {
     let len = usize::from(r.u16()?);
     let start = r.pos();
     let bytes = r.bytes(len, "an NBT string")?;
-    let invalid = || super::super::reader::Error {
-        at: start,
-        message: "NBT string is not modified UTF-8".into(),
-    };
+    let invalid = || Error::misread(start, "NBT string is not modified UTF-8");
     let continuation = |i: usize| {
         bytes
             .get(i)

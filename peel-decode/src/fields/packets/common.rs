@@ -1,31 +1,15 @@
 //! Packets shared by the configuration and game phases. 1.20.1 has no
 //! configuration phase, so they are game packets there.
 
-use peel_trace::Direction::{self, Clientbound, Serverbound};
-use peel_trace::Phase;
+use peel_trace::Direction::{Clientbound, Serverbound};
 
 use super::super::reader::{Reader, Result};
-use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder};
+use super::super::{Decoder, NEWEST, PacketDecoder};
 use super::text::component;
-use super::{GAME, V1_20_2, V1_20_5, V1_21_2, decoder};
-
-const CONFIGURATION: &[Phase] = &[Phase::Configuration];
-
-const fn in_game(
-    direction: Direction,
-    name: &'static str,
-    decode: fn(&mut Decoder) -> Result<()>,
-) -> PacketDecoder {
-    decoder(GAME, direction, name, OLDEST..=NEWEST, decode)
-}
-
-const fn in_configuration(
-    direction: Direction,
-    name: &'static str,
-    decode: fn(&mut Decoder) -> Result<()>,
-) -> PacketDecoder {
-    decoder(CONFIGURATION, direction, name, V1_20_2..=NEWEST, decode)
-}
+use super::{
+    CONFIGURATION, GAME, V1_20_2, V1_20_5, V1_21_2, V26_3, decoder, in_configuration, in_game,
+    string,
+};
 
 pub static DECODERS: &[PacketDecoder] = &[
     in_game(Clientbound, "keep_alive", keep_alive),
@@ -73,6 +57,20 @@ pub static DECODERS: &[PacketDecoder] = &[
         "select_known_packs",
         V1_20_5..=NEWEST,
         known_packs,
+    ),
+    decoder(
+        GAME,
+        Clientbound,
+        "post_effects",
+        V26_3..=NEWEST,
+        post_effects,
+    ),
+    decoder(
+        CONFIGURATION,
+        Clientbound,
+        "post_effects",
+        V26_3..=NEWEST,
+        post_effects,
     ),
 ];
 
@@ -150,10 +148,19 @@ fn known_packs(d: &mut Decoder) -> Result<()> {
     Ok(())
 }
 
+/// The post-processing shaders to apply, by id.
+fn post_effects(d: &mut Decoder) -> Result<()> {
+    d.list("post_effects", string)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::ops::RangeInclusive;
 
+    use peel_trace::{Direction, Phase};
+
+    use super::super::super::OLDEST;
     use super::super::super::testing::{NO_FIELDS, assert_decodes};
     use super::super::V1_20_3;
     use super::*;
@@ -318,6 +325,21 @@ mod tests {
             "configuration_acknowledged",
             &[],
             NO_FIELDS,
+        );
+    }
+
+    #[test]
+    fn post_effects() {
+        let body = [&[1, 14][..], b"minecraft:blur"].concat();
+        check(
+            Clientbound,
+            "post_effects",
+            V26_3..=NEWEST,
+            &body,
+            &[
+                "post_effects: 1 item [1..17]",
+                "  0: \"minecraft:blur\" [2..17]",
+            ],
         );
     }
 }

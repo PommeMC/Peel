@@ -1,29 +1,43 @@
 //! Decoders grouped by the part of the protocol they cover. Protocol
 //! boundaries come from diffing each codec across the reference versions.
 
+mod advancements;
 mod chat;
+mod chunk;
 mod common;
+mod components;
 mod connection;
 mod entities;
+mod entity_data;
+mod items;
 mod nbt;
 mod player;
+mod recipes;
+mod session;
 mod text;
 mod world;
 
 use std::ops::RangeInclusive;
 
 use peel_trace::{Direction, Phase};
+use pomme_protocol::{ClientRegistry, RegistryTable};
 
 use super::reader::{Reader, Result};
-use super::{Decoder, PacketDecoder};
+use super::{Decoder, NEWEST, Name, OLDEST, PacketDecoder, count};
 
 pub static DECODERS: &[&[PacketDecoder]] = &[
     connection::DECODERS,
     common::DECODERS,
     player::DECODERS,
+    session::DECODERS,
+    recipes::DECODERS,
+    advancements::DECODERS,
     entities::DECODERS,
+    entity_data::DECODERS,
     world::DECODERS,
+    chunk::DECODERS,
     chat::DECODERS,
+    items::DECODERS,
 ];
 
 /// The protocol of each version where a codec changed.
@@ -42,6 +56,7 @@ pub const V26_2: i32 = 776;
 pub const V26_3: i32 = 777;
 
 pub const GAME: &[Phase] = &[Phase::Game];
+pub const CONFIGURATION: &[Phase] = &[Phase::Configuration];
 
 pub const fn decoder(
     phases: &'static [Phase],
@@ -67,6 +82,24 @@ pub const fn game(
     decode: fn(&mut Decoder) -> Result<()>,
 ) -> PacketDecoder {
     decoder(GAME, direction, name, protocols, decode)
+}
+
+/// A packet of the game phase in every version.
+pub const fn in_game(
+    direction: Direction,
+    name: &'static str,
+    decode: fn(&mut Decoder) -> Result<()>,
+) -> PacketDecoder {
+    decoder(GAME, direction, name, OLDEST..=NEWEST, decode)
+}
+
+/// A packet of the configuration phase, which 1.20.2 added.
+pub const fn in_configuration(
+    direction: Direction,
+    name: &'static str,
+    decode: fn(&mut Decoder) -> Result<()>,
+) -> PacketDecoder {
+    decoder(CONFIGURATION, direction, name, V1_20_2..=NEWEST, decode)
 }
 
 /// Yaw then pitch, as floats.
@@ -100,6 +133,116 @@ pub const RELATIVES: &[&str] = &[
 pub fn relatives(d: &mut Decoder) -> Result<()> {
     d.flags("relatives", Reader::i32, RELATIVES)?;
     Ok(())
+}
+
+/// An id in `registry`, or a raw id for registries `pomme-protocol` has no
+/// table for.
+pub fn id(d: &mut Decoder, name: impl Into<Name>, registry: Option<ClientRegistry>) -> Result<i32> {
+    match registry {
+        Some(registry) => d.registry(name, registry),
+        None => d.raw_id(name),
+    }
+}
+
+/// `ByteBufCodecs.holder`: 0 and the value inline, or a registry id plus one.
+pub fn holder(
+    d: &mut Decoder,
+    name: impl Into<Name>,
+    registry: Option<ClientRegistry>,
+    direct: impl FnOnce(&mut Decoder) -> Result<()>,
+) -> Result<()> {
+    let name = name.into();
+    d.prefixed(Reader::var_int, |d, holder| match holder {
+        0 => d.group(name, direct),
+        id => {
+            let entry = match registry {
+                Some(registry) => d.registry_entry(registry, id - 1),
+                None => format!("#{}", id - 1),
+            };
+            d.note(name, &entry)
+        }
+    })
+}
+
+/// `ByteBufCodecs.holderSet`: 0 and a tag, or the entry count plus one and
+/// the entries.
+pub fn holder_set(
+    d: &mut Decoder,
+    name: impl Into<Name>,
+    registry: Option<ClientRegistry>,
+) -> Result<()> {
+    let name = name.into();
+    d.prefixed(Reader::var_int, |d, prefix| {
+        if prefix == 0 {
+            return tag_key(d, name);
+        }
+        let len = usize::try_from(prefix - 1).map_err(|_| {
+            d.reader()
+                .error(format!("{prefix} isn't a holder set size"))
+        })?;
+        d.group(name, |d| {
+            for index in 0..len {
+                id(d, index.to_string(), registry)?;
+            }
+            Ok(())
+        })?;
+        d.show_last(count(len, "item"));
+        Ok(())
+    })
+}
+
+/// `TagKey.streamCodec`: a tag's location, shown with `#`.
+pub fn tag_key(d: &mut Decoder, name: impl Into<Name>) -> Result<()> {
+    d.read(name, Reader::string, |tag| format!("#{tag}"))?;
+    Ok(())
+}
+
+/// `SoundEvent.STREAM_CODEC`: a sound event holder whose inline form is a
+/// location and an optional fixed range.
+pub fn sound_event(d: &mut Decoder, name: impl Into<Name>) -> Result<()> {
+    holder(d, name, Some(ClientRegistry::SoundEvent), |d| {
+        d.string("location")?;
+        d.optional("fixed_range", |d, name| d.f32(name))?;
+        Ok(())
+    })
+}
+
+/// A string, for `list` and `optional`.
+pub fn string(d: &mut Decoder, name: Name) -> Result<()> {
+    d.string(name).map(drop)
+}
+
+/// One network NBT tag, for `list` and `optional`.
+pub fn nbt_tag(d: &mut Decoder, name: Name) -> Result<()> {
+    nbt::root(d, name).map(drop)
+}
+
+/// An enum sent by `VarInt` id.
+pub fn variant(d: &mut Decoder, name: Name, names: &[&str]) -> Result<()> {
+    d.variant(name, Reader::var_int, names).map(drop)
+}
+
+/// The name of entry `id` in `registry`, for decoding that depends on it.
+pub fn registry_name(
+    d: &mut Decoder,
+    registry: ClientRegistry,
+    id: i32,
+    what: &str,
+) -> Result<&'static str> {
+    let protocol = d.protocol();
+    u32::try_from(id)
+        .ok()
+        .and_then(|id| RegistryTable::for_protocol(protocol)?.name_of(registry, id))
+        .ok_or_else(|| d.reader().error(format!("{what} #{id} doesn't exist")))
+}
+
+/// `GlobalPos`: a dimension and a block position.
+pub fn global_pos(d: &mut Decoder, name: Name) -> Result<()> {
+    d.group(name, |d| {
+        d.string("dimension")?;
+        d.block_pos("block_pos")?;
+        Ok(())
+    })
 }
 
 /// `InteractionHand`.

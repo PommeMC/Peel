@@ -32,10 +32,18 @@ export default function PacketBody({ trace, index, changed }: Props) {
   const [hovered, setHovered] = useState<Field | null>(null);
   const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
 
+  const stopped =
+    decoded?.status === "failed" || decoded?.status === "partial"
+      ? decoded
+      : null;
   const highlight = hovered
     ? { start: hovered.start, end: hovered.end, title: hovered.name }
-    : decoded?.status === "failed"
-      ? { start: decoded.at, end: decoded.at + 1, title: decoded.error }
+    : stopped
+      ? {
+          start: stopped.at,
+          end: stopped.status === "failed" ? stopped.at + 1 : Infinity,
+          title: stopped.reason,
+        }
       : {
           start: 0,
           end: frame ? varintLength(frame) : 0,
@@ -54,12 +62,13 @@ export default function PacketBody({ trace, index, changed }: Props) {
   return (
     <>
       <h3 className="detail-heading">Fields</h3>
-      {decoded?.status === "failed" ? (
+      {stopped ? (
         <>
           <p className="detail-note">
-            Stopped at byte {decoded.at}: {decoded.error}
+            {stopped.status === "failed" ? "Stopped at" : "Decoded up to"} byte{" "}
+            {stopped.at}: {stopped.reason}
           </p>
-          {tree(decoded.fields)}
+          {tree(stopped.fields)}
         </>
       ) : decoded?.status !== "fields" ? (
         <p className="detail-placeholder">

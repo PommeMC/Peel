@@ -48,6 +48,7 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "*.global_index",
     "*.time",
     "*.timestamp",
+    "*.obtained_at",
     "*.game_time",
     "*.clocks",
     "*.seed",
@@ -431,7 +432,7 @@ fn compare_fields(pair: [&Packet; 2], sides: &[Side; 2], ignores: &Ignores) -> V
 }
 
 /// Each leaf field as a path and value, plus a `decoding` entry when
-/// decoding failed. A packet without a decoder has none.
+/// decoding stopped short. A packet without a decoder has none.
 fn leaves(decoded: Decoded) -> Vec<(String, String)> {
     fn collect(field: &Field, prefix: &str, leaves: &mut Vec<(String, String)>) {
         let path = if prefix.is_empty() {
@@ -448,16 +449,12 @@ fn leaves(decoded: Decoded) -> Vec<(String, String)> {
         }
     }
 
-    let mut leaves = Vec::new();
-    let fields = match decoded {
-        Decoded::Fields { fields } => fields,
-        Decoded::NoDecoder => return leaves,
-        Decoded::Failed { fields, error, at } => {
-            leaves.push(("decoding".into(), format!("stopped at byte {at}: {error}")));
-            fields
-        }
-    };
-    for field in &fields {
+    let mut leaves: Vec<_> = decoded
+        .stop_note()
+        .map(|note| ("decoding".to_string(), note))
+        .into_iter()
+        .collect();
+    for field in decoded.fields() {
         collect(field, "", &mut leaves);
     }
     leaves

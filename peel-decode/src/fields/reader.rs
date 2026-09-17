@@ -11,6 +11,18 @@ pub struct Error {
     /// Offset into the frame where the read failed.
     pub at: usize,
     pub message: String,
+    /// Decoding reached a codec Peel hasn't ported yet, rather than misreading.
+    pub unsupported: bool,
+}
+
+impl Error {
+    pub fn misread(at: usize, message: impl Into<String>) -> Self {
+        Self {
+            at,
+            message: message.into(),
+            unsupported: false,
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -23,6 +35,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Clone)]
 pub struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -49,9 +62,14 @@ impl<'a> Reader<'a> {
     }
 
     pub fn error(&self, message: impl Into<String>) -> Error {
+        Error::misread(self.pos, message)
+    }
+
+    /// Stops at a value whose codec Peel doesn't decode yet.
+    pub fn unsupported(&self, what: impl fmt::Display) -> Error {
         Error {
-            at: self.pos,
-            message: message.into(),
+            unsupported: true,
+            ..self.error(format!("{what} isn't decoded yet"))
         }
     }
 
@@ -65,6 +83,11 @@ impl<'a> Reader<'a> {
         let bytes = &self.bytes[self.pos..self.pos + len];
         self.pos += len;
         Ok(bytes)
+    }
+
+    /// Up to `len` of the bytes ahead, without reading them.
+    pub fn upcoming(&self, len: usize) -> &'a [u8] {
+        &self.bytes[self.pos..(self.pos + len).min(self.bytes.len())]
     }
 
     pub fn rest(&mut self) -> &'a [u8] {
@@ -147,6 +170,15 @@ impl<'a> Reader<'a> {
         Err(self.error("VarLong is cut off or longer than 10 bytes"))
     }
 
+    /// `ByteBufCodecs.OPTIONAL_VAR_INT`: 0 for none, otherwise the value plus
+    /// one.
+    pub fn optional_var_int(&mut self) -> Result<Option<i32>> {
+        Ok(match self.var_int()? {
+            0 => None,
+            value => Some(value - 1),
+        })
+    }
+
     /// A `VarInt` that is a length or count.
     pub fn count(&mut self) -> Result<usize> {
         let len = self.var_int()?;
@@ -158,10 +190,7 @@ impl<'a> Reader<'a> {
         let len = self.count()?;
         let start = self.pos;
         let bytes = self.bytes(len, "a string")?;
-        std::str::from_utf8(bytes).map_err(|_| Error {
-            at: start,
-            message: "string is not valid UTF-8".into(),
-        })
+        std::str::from_utf8(bytes).map_err(|_| Error::misread(start, "string is not valid UTF-8"))
     }
 
     /// `ByteBufCodecs.BYTE_ARRAY`: a `VarInt` length, then the bytes.

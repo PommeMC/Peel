@@ -5,8 +5,11 @@ use pomme_protocol::ClientRegistry;
 
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder, count};
+use super::components::ATTRIBUTE_OPERATIONS;
+use super::items::item_stack;
 use super::{
-    HAND, V1_20_5, V1_21_2, V1_21_9, V26_3, game, nbt, position_move_rotation, relatives, rotation,
+    HAND, V1_20_5, V1_21, V1_21_2, V1_21_5, V1_21_9, V26_3, game, nbt_tag, position_move_rotation,
+    relatives, rotation,
 };
 
 pub static DECODERS: &[PacketDecoder] = &[
@@ -184,13 +187,39 @@ pub static DECODERS: &[PacketDecoder] = &[
             &["ambient", "visible", "show_icon", "blend"],
         )?;
         if d.protocol() < V1_20_5 {
-            d.optional("factor_data", |d, name| nbt::root(d, name).map(drop))?;
+            d.optional("factor_data", nbt_tag)?;
         }
         Ok(())
     }),
     game(Clientbound, "remove_mob_effect", OLDEST..=NEWEST, |d| {
         d.var_int("entity_id")?;
         d.raw_id("effect")?;
+        Ok(())
+    }),
+    game(Clientbound, "update_attributes", OLDEST..=NEWEST, |d| {
+        d.var_int("entity_id")?;
+        d.list("attributes", |d, name| d.group(name, attribute))?;
+        Ok(())
+    }),
+    game(Clientbound, "set_equipment", OLDEST..=NEWEST, |d| {
+        d.var_int("entity_id")?;
+        let slots = [
+            "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
+        ];
+        let known = match d.protocol() {
+            V1_21_5.. => 8,
+            V1_20_5.. => 7,
+            _ => 6,
+        };
+        while d.prefixed(Reader::u8, |d, byte| {
+            let Some(&slot) = slots[..known].get(usize::from(byte & 0x7F)) else {
+                return Err(d
+                    .reader()
+                    .error(format!("equipment slot {} doesn't exist", byte & 0x7F)));
+            };
+            item_stack(d, slot)?;
+            Ok(byte & 0x80 != 0)
+        })? {}
         Ok(())
     }),
     game(Clientbound, "set_health", OLDEST..=NEWEST, |d| {
@@ -208,6 +237,39 @@ pub static DECODERS: &[PacketDecoder] = &[
 ];
 
 /// Velocity in 1/8000 blocks per tick, as shorts until 1.21.9 sent `LpVec3`.
+/// `ClientboundUpdateAttributesPacket.AttributeSnapshot`. Attributes were
+/// named by key until 1.20.5, and modifiers by UUID until 1.21.
+fn attribute(d: &mut Decoder) -> Result<()> {
+    let protocol = d.protocol();
+    if protocol >= V1_20_5 {
+        d.registry("attribute", ClientRegistry::Attribute)?;
+    } else {
+        d.string("attribute")?;
+    }
+    d.f64("base")?;
+    d.list("modifiers", |d, name| {
+        d.group(name, |d| {
+            if protocol >= V1_21 {
+                d.string("id")?;
+            } else {
+                d.uuid("uuid")?;
+            }
+            d.f64("amount")?;
+            if protocol >= V1_20_5 {
+                d.variant("operation", Reader::var_int, ATTRIBUTE_OPERATIONS)?;
+            } else {
+                d.variant(
+                    "operation",
+                    Reader::i8,
+                    &["addition", "multiply_base", "multiply_total"],
+                )?;
+            }
+            Ok(())
+        })
+    })?;
+    Ok(())
+}
+
 fn velocity(d: &mut Decoder) -> Result<()> {
     d.fixed_vec3("velocity", Reader::i16, 8000.0)?;
     Ok(())
@@ -269,9 +331,8 @@ mod tests {
     use std::ops::RangeInclusive;
 
     use peel_trace::Phase::Game;
-    use pomme_protocol::RegistryTable;
 
-    use super::super::super::testing::{assert_decodes, f32s, f64s, protocols};
+    use super::super::super::testing::{assert_decodes, entry, f32s, f64s, protocols};
     use super::super::V1_20_2;
     use super::*;
 
@@ -298,13 +359,12 @@ mod tests {
             (V1_21_9..=NEWEST, newer, true),
         ] {
             for protocol in protocols(range) {
-                let table = RegistryTable::for_protocol(protocol).unwrap();
-                let entity_type = table.name_of(ClientRegistry::EntityType, 1).unwrap();
+                let entity_type = entry(protocol, ClientRegistry::EntityType, 1);
                 let at = if lp { 44 } else { 43 };
                 let mut expected = vec![
                     "entity_id: 7 [1..2]".to_string(),
                     "uuid: abababab-abab-abab-abab-abababababab [2..18]".into(),
-                    format!("entity_type: {entity_type} (#1) [18..19]"),
+                    format!("entity_type: {entity_type} [18..19]"),
                     "position: 0.5, 64.0, -3.5 [19..43]".into(),
                 ];
                 if lp {
@@ -670,5 +730,105 @@ mod tests {
                 "x_rot: 0.0° [43..44]",
             ],
         );
+    }
+
+    #[test]
+    fn update_attributes_by_version() {
+        let amounts = f64s(&[1.0]);
+        let head = |attribute: &[u8]| [&[7, 1][..], attribute, &amounts, &[1]].concat();
+        check(
+            OLDEST..=V1_20_5 - 1,
+            "update_attributes",
+            &[&head(&[3, b'a', b':', b'b'])[..], &UUID, &amounts, &[1]].concat(),
+            &[
+                "entity_id: 7 [1..2]",
+                "attributes: 1 item [2..41]",
+                "  0:  [3..41]",
+                "    attribute: \"a:b\" [3..7]",
+                "    base: 1.0 [7..15]",
+                "    modifiers: 1 item [15..41]",
+                "      0:  [16..41]",
+                "        uuid: abababab-abab-abab-abab-abababababab [16..32]",
+                "        amount: 1.0 [32..40]",
+                "        operation: multiply_base (1) [40..41]",
+            ],
+        );
+        for protocol in protocols(V1_20_5..=NEWEST) {
+            let attribute = format!(
+                "    attribute: {} [3..4]",
+                entry(protocol, ClientRegistry::Attribute, 0)
+            );
+            let (modifier, modifier_lines, end): (Vec<u8>, _, usize) = if protocol >= V1_21 {
+                (
+                    [&[3][..], b"a:b"].concat(),
+                    [
+                        "        id: \"a:b\" [13..17]",
+                        "        amount: 1.0 [17..25]",
+                        "        operation: add_multiplied_base (1) [25..26]",
+                    ],
+                    26,
+                )
+            } else {
+                (
+                    UUID.to_vec(),
+                    [
+                        "        uuid: abababab-abab-abab-abab-abababababab [13..29]",
+                        "        amount: 1.0 [29..37]",
+                        "        operation: add_multiplied_base (1) [37..38]",
+                    ],
+                    38,
+                )
+            };
+            let mut lines = vec![
+                "entity_id: 7 [1..2]".to_string(),
+                format!("attributes: 1 item [2..{end}]"),
+                format!("  0:  [3..{end}]"),
+                attribute,
+                "    base: 1.0 [4..12]".into(),
+                format!("    modifiers: 1 item [12..{end}]"),
+                format!("      0:  [13..{end}]"),
+            ];
+            lines.extend(modifier_lines.map(String::from));
+            check(
+                protocol..=protocol,
+                "update_attributes",
+                &[&head(&[0])[..], &modifier, &amounts, &[1]].concat(),
+                &lines,
+            );
+        }
+    }
+
+    #[test]
+    fn set_equipment_by_version() {
+        let stone = entry(OLDEST, ClientRegistry::Item, 1);
+        check(
+            OLDEST..=V1_20_5 - 1,
+            "set_equipment",
+            &[5, 0x80, 0, 0x05, 1, 1, 1, 0],
+            &[
+                "entity_id: 5 [1..2]".to_string(),
+                "mainhand: empty [2..4]".into(),
+                format!("head: 1 × {stone} [4..9]"),
+                format!("  item: {stone} [6..7]"),
+                "  count: 1 [7..8]".into(),
+                "  tag: none [8..9]".into(),
+            ],
+        );
+        for protocol in protocols(V1_20_5..=NEWEST) {
+            let stone = entry(protocol, ClientRegistry::Item, 1);
+            check(
+                protocol..=protocol,
+                "set_equipment",
+                &[5, 0x80, 0, 0x06, 1, 1, 0, 0],
+                &[
+                    "entity_id: 5 [1..2]".to_string(),
+                    "mainhand: empty [2..4]".into(),
+                    format!("body: 1 × {stone} [4..9]"),
+                    "  count: 1 [5..6]".into(),
+                    format!("  item: {stone} [6..7]"),
+                    "  components: none [7..9]".into(),
+                ],
+            );
+        }
     }
 }

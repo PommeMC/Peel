@@ -35,7 +35,12 @@ export interface Field {
 export type Decoded =
   | { status: "fields"; fields: Field[] }
   | { status: "no_decoder" }
-  | { status: "failed"; fields: Field[]; error: string; at: number };
+  | {
+      status: "failed" | "partial";
+      fields: Field[];
+      reason: string;
+      at: number;
+    };
 
 /** Mirrors `peel_decode::GroupKey`: which group a packet falls in, comparable
  * across traces. */

@@ -2,13 +2,12 @@
 //! and the player's own position.
 
 use peel_trace::Direction::Clientbound;
-use pomme_protocol::ClientRegistry;
 
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder};
 use super::{
-    RELATIVES, V1_20_2, V1_20_3, V1_21_2, V1_21_6, V1_21_9, V26_1, game, position_move_rotation,
-    relatives, rotation,
+    RELATIVES, V1_20_2, V1_20_3, V1_21_2, V1_21_4, V1_21_6, V1_21_9, V26_1, V26_3, game,
+    position_move_rotation, relatives, rotation, sound_event,
 };
 
 pub static DECODERS: &[PacketDecoder] = &[
@@ -122,18 +121,79 @@ pub static DECODERS: &[PacketDecoder] = &[
         Ok(())
     }),
     game(Clientbound, "sound", OLDEST..=NEWEST, |d| {
-        sound_event(d)?;
+        sound_event(d, "sound")?;
         sound_source(d)?;
         d.fixed_vec3("position", Reader::i32, 8.0)?;
         sound_tail(d)
     }),
     game(Clientbound, "sound_entity", OLDEST..=NEWEST, |d| {
-        sound_event(d)?;
+        sound_event(d, "sound")?;
         sound_source(d)?;
         d.var_int("entity_id")?;
         sound_tail(d)
     }),
+    game(Clientbound, "add_transient_block", V26_3..=NEWEST, |d| {
+        d.block_pos("block_pos")?;
+        d.raw_id("block_state")?;
+        Ok(())
+    }),
+    game(Clientbound, "initialize_border", OLDEST..=NEWEST, |d| {
+        for name in ["new_center_x", "new_center_z", "old_size", "new_size"] {
+            d.f64(name)?;
+        }
+        d.var_long("lerp_time")?;
+        for name in ["new_absolute_max_size", "warning_blocks", "warning_time"] {
+            d.var_int(name)?;
+        }
+        Ok(())
+    }),
+    game(Clientbound, "ticking_state", V1_20_3..=NEWEST, |d| {
+        d.f32("tick_rate")?;
+        d.bool("frozen")?;
+        Ok(())
+    }),
+    game(Clientbound, "ticking_step", V1_20_3..=NEWEST, |d| {
+        d.var_int("tick_steps")?;
+        Ok(())
+    }),
+    game(Clientbound, "change_difficulty", OLDEST..=NEWEST, |d| {
+        let difficulties = &["peaceful", "easy", "normal", "hard"];
+        if d.protocol() >= V1_21_6 {
+            d.variant("difficulty", Reader::var_int, difficulties)?;
+        } else {
+            d.variant("difficulty", Reader::u8, difficulties)?;
+        }
+        d.bool("locked")?;
+        Ok(())
+    }),
+    game(
+        Clientbound,
+        "set_carried_item",
+        OLDEST..=V1_21_2 - 1,
+        held_slot,
+    ),
+    game(Clientbound, "set_held_slot", V1_21_2..=NEWEST, held_slot),
+    game(Clientbound, "player_abilities", OLDEST..=NEWEST, |d| {
+        d.flags(
+            "flags",
+            Reader::u8,
+            &["invulnerable", "flying", "may_fly", "instabuild"],
+        )?;
+        d.f32("flying_speed")?;
+        d.f32("walking_speed")?;
+        Ok(())
+    }),
 ];
+
+/// The selected hotbar slot: a byte until 1.21.4 sent a `VarInt`.
+fn held_slot(d: &mut Decoder) -> Result<()> {
+    if d.protocol() >= V1_21_4 {
+        d.var_int("slot")?;
+    } else {
+        d.i8("slot")?;
+    }
+    Ok(())
+}
 
 /// `ClientboundGameEventPacket` types by id; 1.20.2 and 1.20.3 each added one.
 const GAME_EVENTS: &[&str] = &[
@@ -152,21 +212,6 @@ const GAME_EVENTS: &[&str] = &[
     "limited_crafting",
     "level_chunks_load_start",
 ];
-
-/// A `sound_event` holder: 0 and an inline event, or a registry id plus one.
-fn sound_event(d: &mut Decoder) -> Result<()> {
-    d.prefixed(Reader::var_int, |d, holder| match holder {
-        0 => d.group("sound", |d| {
-            d.string("location")?;
-            d.optional("fixed_range", |d, name| d.f32(name))?;
-            Ok(())
-        }),
-        id => {
-            let entry = d.registry_entry(ClientRegistry::SoundEvent, id - 1);
-            d.note("sound", &entry)
-        }
-    })
-}
 
 /// `SoundSource`; 1.21.6 added `ui`.
 fn sound_source(d: &mut Decoder) -> Result<()> {
@@ -191,10 +236,10 @@ mod tests {
     use std::ops::RangeInclusive;
 
     use peel_trace::Phase::Game;
-    use pomme_protocol::RegistryTable;
+    use pomme_protocol::ClientRegistry;
 
     use super::super::super::testing::{
-        NO_FIELDS, assert_decodes, block_pos, f32s, f64s, protocols,
+        NO_FIELDS, assert_decodes, block_pos, entry, f32s, f64s, protocols,
     };
     use super::*;
 
@@ -384,10 +429,7 @@ mod tests {
             ]
         };
         for protocol in protocols(OLDEST..=NEWEST) {
-            let name = RegistryTable::for_protocol(protocol)
-                .unwrap()
-                .name_of(ClientRegistry::SoundEvent, 0)
-                .unwrap();
+            let sound = entry(protocol, ClientRegistry::SoundEvent, 0);
             let body = [
                 &[1, 7][..],
                 &8i32.to_be_bytes(),
@@ -397,7 +439,7 @@ mod tests {
             ]
             .concat();
             let mut expected = vec![
-                format!("sound: {name} (#0) [1..2]"),
+                format!("sound: {sound} [1..2]"),
                 "source: player (7) [2..3]".into(),
                 "position: 1.0, -0.5, 2.0 [3..15]".into(),
             ];
@@ -414,5 +456,99 @@ mod tests {
         ];
         expected.extend(tail_lines(13));
         check(V1_21_6..=NEWEST, "sound_entity", &inline, &expected);
+    }
+
+    #[test]
+    fn add_transient_block() {
+        check(
+            V26_3..=NEWEST,
+            "add_transient_block",
+            &[&block_pos(1, 2, 3)[..], &[9]].concat(),
+            &["block_pos: 1, 2, 3 [1..9]", "block_state: #9 [9..10]"],
+        );
+    }
+
+    #[test]
+    fn initialize_border() {
+        check(
+            OLDEST..=NEWEST,
+            "initialize_border",
+            &[&f64s(&[1.0, 2.0, 3.0, 4.0])[..], &[5, 7, 8, 9]].concat(),
+            &[
+                "new_center_x: 1.0 [1..9]",
+                "new_center_z: 2.0 [9..17]",
+                "old_size: 3.0 [17..25]",
+                "new_size: 4.0 [25..33]",
+                "lerp_time: 5 [33..34]",
+                "new_absolute_max_size: 7 [34..35]",
+                "warning_blocks: 8 [35..36]",
+                "warning_time: 9 [36..37]",
+            ],
+        );
+    }
+
+    #[test]
+    fn ticking() {
+        check(
+            V1_20_3..=NEWEST,
+            "ticking_state",
+            &[&f32s(&[20.0])[..], &[1]].concat(),
+            &["tick_rate: 20.0 [1..5]", "frozen: true [5..6]"],
+        );
+        check(
+            V1_20_3..=NEWEST,
+            "ticking_step",
+            &[3],
+            &["tick_steps: 3 [1..2]"],
+        );
+    }
+
+    #[test]
+    fn change_difficulty() {
+        let expected = ["difficulty: hard (3) [1..2]", "locked: true [2..3]"];
+        check(
+            OLDEST..=V1_21_6 - 1,
+            "change_difficulty",
+            &[3, 1],
+            &expected,
+        );
+        check(V1_21_6..=NEWEST, "change_difficulty", &[3, 1], &expected);
+        check(
+            OLDEST..=V1_21_6 - 1,
+            "change_difficulty",
+            &[0x80, 1],
+            &["difficulty: unknown (128) [1..2]", "locked: true [2..3]"],
+        );
+    }
+
+    #[test]
+    fn held_slot() {
+        check(
+            OLDEST..=V1_21_2 - 1,
+            "set_carried_item",
+            &[8],
+            &["slot: 8 [1..2]"],
+        );
+        check(
+            V1_21_2..=V1_21_2,
+            "set_held_slot",
+            &[8],
+            &["slot: 8 [1..2]"],
+        );
+        check(V1_21_4..=NEWEST, "set_held_slot", &[8], &["slot: 8 [1..2]"]);
+    }
+
+    #[test]
+    fn player_abilities() {
+        check(
+            OLDEST..=NEWEST,
+            "player_abilities",
+            &[&[6][..], &f32s(&[0.05, 0.1])].concat(),
+            &[
+                "flags: 0x06 flying | may_fly [1..2]",
+                "flying_speed: 0.05 [2..6]",
+                "walking_speed: 0.1 [6..10]",
+            ],
+        );
     }
 }
