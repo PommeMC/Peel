@@ -18,8 +18,8 @@ when.
 It is the sister project of the [Pomme client](https://github.com/PommeMC/Client)
 and is built on that repo's `pomme-protocol` crate.
 
-> **Status:** early. Capturing, dumping and viewing traces work today; diffing
-> against vanilla is next.
+> **Status:** early. Capturing, dumping, viewing and diffing traces work today;
+> vanilla reference traces for each scenario are next.
 
 ## Features
 
@@ -29,13 +29,14 @@ and is built on that repo's `pomme-protocol` crate.
 - **Small, shareable traces**: raw packets in a compressed file; chunk data compresses about 7x. Names and fields are computed when a trace is read, so improvements to Peel apply to old traces too
 - **Packet fields**: handshake, login, configuration, movement, entity, world and chat packets decode into named fields, each ported from the vanilla codec for every version it changed in. Other packets show their raw bytes
 - **Web viewer**: a filterable tick timeline with a byte-level view of every packet, opened with `peel view`. Hovering a field highlights its bytes. Traces are decoded in your browser by the same Rust code as `peel dump`, and never uploaded
+- **Nothing to install for viewing**: the viewer is also hosted at [peel.pomme.rs](https://peel.pomme.rs), for opening or comparing a shared trace in any browser
+- **Diff against vanilla**: `peel diff` and the viewer line a trace up with a vanilla reference tick by tick and report packets that are missing, extra or out of order, and fields that differ, skipping values that change between any two sessions
 - **Text or JSON output** for reading traces yourself or scripting against them
 
 Planned:
 
-- **Diff against vanilla**: compare a trace with reference traces captured from the real vanilla client
+- **Reference traces**: vanilla captures of common scenarios to diff against
 - **More field decoders**: chunk contents, entity data, items and the remaining packets
-- **Hosted viewer**: the same viewer on the Pomme website, for opening a shared trace with nothing installed
 
 ## Usage
 
@@ -97,15 +98,42 @@ peel view walk.trace
 Opens the trace in your browser: a timeline grouped by tick with repeated
 packets folded together, an activity strip for jumping around, filters by
 packet name, direction and phase, and the raw bytes of any packet you select.
-Step through packets with the arrow keys, and link to one with `#record=N`. The viewer is served from inside `peel`
-on `127.0.0.1` and works offline; stop it with Ctrl+C.
+Step through packets with the arrow keys, and link to one with `#record=N`. The
+viewer is served from inside `peel` on `127.0.0.1` and works offline; stop it
+with Ctrl+C. Without Peel installed, open a trace at
+[peel.pomme.rs](https://peel.pomme.rs) instead.
+
+### Compare against vanilla
+
+```bash
+peel diff mine.trace --against vanilla.trace
+```
+
+Lines both traces up tick by tick and lists what differs: packets missing from
+your trace, extra ones, ones in a different order within a tick, and fields
+with different values, each with a count and where it first happens. It
+compares what the client sends; add `--all` to include the server's packets.
+
+Values that differ between any two sessions, such as positions, entity ids and
+signatures, are skipped; `--no-default-ignores` compares them too, and
+`--ignore keep_alive` or `--ignore '*.salt'` skips more. If one trace starts a
+tick later, `--offset 1` lines them up. `peel diff` exits with 1 when the traces
+differ, so it can run in CI, and `--json` prints every aligned row.
+
+`peel view mine.trace --against vanilla.trace` opens the same comparison in the
+viewer, or choose **Compare…** with a trace open. At
+[peel.pomme.rs](https://peel.pomme.rs), choose both traces under **Compare a
+trace against vanilla**. Traces from before 1.21.2 have no tick marker, so they
+are compared in 50 ms windows and labelled approximate.
 
 ## Privacy and scope
 
 - **Traces are private data.** They contain usernames, chat and positions, so
   only share them with people you trust. Peel makes no network connections of
   its own: the proxy only forwards the traffic you send through it, and
-  `peel view` only serves your own machine.
+  `peel view` only serves your own machine. At peel.pomme.rs, traces are read
+  in your browser and never uploaded; the page's security policy blocks it
+  from sending them anywhere.
 - **Offline-mode servers only.** Peel never handles Microsoft or Mojang
   credentials, access tokens or session keys. If a server asks for encryption,
   Peel stops and tells you why.
@@ -115,7 +143,7 @@ on `127.0.0.1` and works offline; stop it with Ctrl+C.
 ## Architecture
 
 ```bash
-peel/         # The `peel` binary (crate `pomme-peel`): capture proxy, dump, view
+peel/         # The `peel` binary (crate `pomme-peel`): capture proxy, dump, diff, view
 peel-trace/   # The trace file format: types, reader, writer. Shared with Pomme's built-in recorder
 peel-decode/  # Packet names, the tick timeline and field decoders, shared by `peel dump` and the viewer
 peel-wasm/    # The viewer's WebAssembly bridge to peel-decode
@@ -154,6 +182,11 @@ just build --release
 `just build` builds the viewer and embeds it in the binary, which is
 `target/release/peel` (`peel.exe` on Windows). A plain `cargo build` also works,
 but `peel view` then shows a page saying the viewer wasn't built.
+
+`just deploy` builds the viewer and publishes it to
+[peel.pomme.rs](https://peel.pomme.rs), a Cloudflare Pages project named
+`peel`. It needs access to that project and a one-time
+`pnpm --filter peel-viewer exec wrangler login`.
 
 ## Contributing
 

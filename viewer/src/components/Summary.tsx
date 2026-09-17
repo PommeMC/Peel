@@ -1,58 +1,49 @@
-import { bytes, seconds, thousands } from "../lib/format";
-import type { LoadedTrace } from "../lib/trace";
+import type { ReactNode } from "react";
+
 import Brand from "./Brand";
 
 interface Props {
-  trace: LoadedTrace;
-  packetCount: number;
-  onOpen(): void;
+  name: string;
+  meta: string;
+  /** `Stat`s. */
+  stats: ReactNode;
+  actions: ReactNode;
+  warnings: (string | null)[];
 }
 
-export default function Summary({ trace, packetCount, onOpen }: Props) {
-  const { timeline } = trace;
-  const first = timeline.groups.at(0)?.packets.at(0)?.timestamp_us ?? 0;
-  const last = timeline.groups.at(-1)?.packets.at(-1)?.timestamp_us ?? 0;
-  const ticks = timeline.groups.filter((g) => g.kind === "tick").length;
-  const version =
-    timeline.protocol === null
-      ? "No packets"
-      : `${timeline.version ?? "Unsupported version"} · protocol ${timeline.protocol}`;
-
+/** The bar above a trace or comparison: what is open, its numbers and
+ * actions. */
+export default function Summary({
+  name,
+  meta,
+  stats,
+  actions,
+  warnings,
+}: Props) {
   return (
     <header className="summary">
       <Brand />
       <div className="summary-file">
-        <span className="summary-name" title={trace.fileName}>
-          {trace.fileName}
+        <span className="summary-name" title={name}>
+          {name}
         </span>
-        <span className="summary-meta">
-          {version} · {new Date(timeline.started_at_unix_ms).toLocaleString()} ·{" "}
-          {timeline.recorder}
-        </span>
+        <span className="summary-meta">{meta}</span>
       </div>
-      <dl className="summary-stats">
-        <Stat label="Duration" value={seconds(last - first, 1)} />
-        <Stat label="Packets" value={thousands(packetCount)} />
-        {timeline.grouping === "tick" ? (
-          <Stat label="Ticks" value={thousands(ticks)} />
-        ) : (
-          <Stat
-            label="Grouping"
-            value="Approximate"
-            title="This protocol has no client_tick_end tick marker (added in 1.21.2), so packets are grouped into 50 ms windows"
-          />
-        )}
-        <Stat label="Size" value={bytes(trace.size)} />
-      </dl>
-      <button className="button" onClick={onOpen}>
-        Open trace
-      </button>
-      {trace.warning && <p className="summary-warning">{trace.warning}</p>}
+      <dl className="summary-stats">{stats}</dl>
+      {actions}
+      {warnings.map(
+        (warning) =>
+          warning && (
+            <p key={warning} className="summary-warning">
+              {warning}
+            </p>
+          ),
+      )}
     </header>
   );
 }
 
-function Stat({
+export function Stat({
   label,
   value,
   title,
@@ -66,5 +57,15 @@ function Stat({
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
+  );
+}
+
+export function ApproximateStat() {
+  return (
+    <Stat
+      label="Grouping"
+      value="Approximate"
+      title="This protocol has no client_tick_end tick marker (added in 1.21.2), so packets are grouped into 50 ms windows"
+    />
   );
 }

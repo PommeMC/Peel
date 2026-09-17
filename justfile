@@ -15,6 +15,10 @@ viewer-build: wasm
 build *args: viewer-build
     @cargo build {{ args }}
 
+# Build the viewer and publish it to peel.pomme.rs (Cloudflare Pages project `peel`).
+deploy: viewer-build
+    @pnpm --filter peel-viewer exec wrangler pages deploy
+
 pre-pr: wasm
     @cargo fmt --all -- --check
     @cargo clippy --workspace --all-targets -- -D warnings

@@ -14,6 +14,7 @@ path = "src/main.rs"
 peel-decode = { workspace = true }
 peel-trace = { workspace = true }
 pomme-protocol = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 flate2 = { workspace = true }

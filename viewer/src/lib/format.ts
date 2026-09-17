@@ -1,4 +1,4 @@
-import type { Direction, Group, Packet, Phase } from "./trace";
+import type { Direction, Group, GroupKey, Packet, Phase } from "./trace";
 
 export const PHASES: Phase[] = [
   "handshake",
@@ -53,14 +53,29 @@ export function hexId(id: number): string {
 }
 
 export function groupLabel(group: Group): string {
-  switch (group.kind) {
+  return group.kind === "window"
+    ? `Window +${seconds(group.start_us)}`
+    : groupKeyLabel(group);
+}
+
+export function groupKeyLabel(key: GroupKey): string {
+  switch (key.kind) {
     case "setup":
       return "Before first tick";
     case "tick":
-      return `Tick ${thousands(group.index)}`;
+      return `Tick ${thousands(key.index ?? 0)}`;
     case "window":
-      return `Window +${seconds(group.start_us)}`;
+      return `Window ${thousands(key.index ?? 0)}`;
   }
+}
+
+export function versionLabel(protocol: number, version: string | null): string {
+  return `${version ?? "Unsupported version"} · protocol ${protocol}`;
+}
+
+/** `"1 packet"`, `"2 packets"`. */
+export function count(n: number, noun: string): string {
+  return `${thousands(n)} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 /** Bytes in the varint at the start of `data`: a frame's packet id. */

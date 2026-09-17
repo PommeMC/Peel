@@ -2,6 +2,7 @@
 //! bytes and gets back the same timeline `peel dump --json` prints.
 
 use peel_decode::Loaded;
+use peel_decode::diff::Options;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -41,4 +42,13 @@ impl Trace {
     pub fn warning(&self) -> Option<String> {
         self.loaded.warning()
     }
+}
+
+/// Compares `trace` against `reference` with `options` as JSON, returning
+/// the diff as JSON in the shape of `peel diff --json`.
+#[wasm_bindgen]
+pub fn diff(reference: &Trace, trace: &Trace, options: &str) -> Result<String, JsError> {
+    let options: Options = serde_json::from_str(options)?;
+    let diff = peel_decode::diff::diff(&reference.loaded, &trace.loaded, &options)?;
+    Ok(serde_json::to_string(&diff)?)
 }

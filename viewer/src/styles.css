@@ -254,10 +254,26 @@ button {
   padding: 24px 28px;
 }
 
+.drop-card + .drop-card {
+  margin-top: 14px;
+}
+
 .drop-title {
   flex: 1;
   font-size: 15px;
   font-weight: 500;
+}
+
+.drop-card .button:not(.button-primary) {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.landing-link {
+  color: var(--accent);
+  white-space: nowrap;
 }
 
 .landing-error {
@@ -406,6 +422,18 @@ button {
   width: 130px;
 }
 
+.control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.offset {
+  width: 76px;
+}
+
 .toggle-group {
   display: flex;
   gap: 6px;
@@ -463,6 +491,20 @@ button {
 }
 .phase-game {
   --tone: var(--game);
+}
+
+.tone-all {
+  --tone: var(--accent);
+}
+.diff-missing {
+  --tone: var(--error);
+}
+.diff-extra {
+  --tone: var(--accent);
+}
+.diff-moved,
+.diff-changed {
+  --tone: var(--warning);
 }
 
 .badge,
@@ -662,6 +704,97 @@ button {
   color: var(--muted);
 }
 
+/* Diff */
+
+.diff-row {
+  --timeline-columns: 76px minmax(0, 1fr) 24px 76px minmax(0, 1fr);
+}
+
+.diff-row:not(.diff-same, .timeline-columns) {
+  background: color-mix(in srgb, var(--tone) 5%, transparent);
+}
+
+.diff-marker {
+  color: var(--tone, var(--faint));
+  font-family: var(--mono);
+  font-weight: 700;
+  text-align: center;
+}
+
+.findings {
+  width: 320px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 16px 16px 24px;
+  border-right: 1px solid var(--border);
+}
+
+.findings section + section {
+  margin-top: 18px;
+}
+
+.findings ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.findings-empty {
+  margin: 8px 4px;
+  color: var(--muted);
+}
+
+.finding {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 7px 10px;
+  border: none;
+  border-left: 2px solid var(--tone);
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+
+.finding:hover {
+  background: var(--tint);
+}
+
+.finding-name {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+.finding-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.finding-values {
+  color: var(--tone);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.diff-status {
+  margin: 0 0 16px;
+  color: var(--tone, var(--muted));
+  font-weight: 600;
+}
+
+.diff-side + .diff-side {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
 /* Detail */
 
 .detail {
@@ -776,6 +909,11 @@ button {
 .field-value {
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+.field-row.changed {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  box-shadow: inset 2px 0 var(--warning);
 }
 
 .detail-note {

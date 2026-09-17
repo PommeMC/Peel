@@ -84,7 +84,9 @@ online-mode interception. Beyond those:
   ticks or fields belongs in `peel-decode`, exposed through `peel-wasm`; never
   reimplement it in TypeScript
 - **Works offline.** No CDNs, external fonts, analytics or network calls; a
-  trace never leaves the browser
+  trace never leaves the browser. Built pages carry a Content Security Policy
+  (`viewer/vite.config.ts`) that only allows the page's own origin, so anything
+  new must be served with the viewer
 - **Polish is in scope.** Screenshots of the viewer are the project's main
   marketing
 
@@ -123,7 +125,9 @@ peel/
     ├── capture.rs          # Proxy, connection handling, recorder thread
     ├── session.rs          # Per-connection framing, compression and phase tracking
     ├── wire.rs             # Frame splitting, decompression, handshake fields
+    ├── cli.rs              # Trace loading and output shared by the commands
     ├── dump.rs             # `peel dump`: text and JSON output
+    ├── diff.rs             # `peel diff`: text and JSON output
     ├── view.rs             # `peel view`: local server for the embedded viewer
     └── status.rs           # Log lines and capture's live status line
 peel-decode/
@@ -131,6 +135,7 @@ peel-decode/
     ├── lib.rs              # Loading a whole trace
     ├── names.rs            # Bridges trace types to pomme-protocol's tables
     ├── timeline.rs         # Tick grouping, shared by dump and the viewer
+    ├── diff.rs             # Tick-by-tick comparison, shared by diff and the viewer
     └── fields/
         ├── mod.rs          # Decoder lookup by phase, direction, name and protocol
         ├── reader.rs       # Vanilla's primitive types
@@ -140,9 +145,9 @@ peel-wasm/
 └── src/lib.rs              # The viewer's WebAssembly API
 viewer/
 └── src/
-    ├── App.tsx             # Opening traces, filtering, selection
-    ├── components/         # Summary, filters, timeline, packet detail, drop zone
-    └── lib/                # The wasm wrapper, filtering, rows and formatting, with tests
+    ├── App.tsx             # Opening a trace, and a reference to compare it against
+    ├── components/         # The trace view and diff view, and the pieces they share
+    └── lib/                # The wasm wrapper, filtering, rows, diff lines and formatting, with tests
 peel-trace/
 └── src/
     ├── lib.rs              # Trace types, errors, format version

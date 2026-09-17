@@ -1,0 +1,5 @@
+// The Cloudflare Pages project serving peel.pomme.rs; `just deploy` publishes to it.
+{
+  "name": "peel",
+  "pages_build_output_dir": "dist",
+}

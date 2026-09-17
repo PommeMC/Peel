@@ -2,6 +2,7 @@
 //! timeline and decoded fields. Shared by `peel dump` and the browser viewer,
 //! so both always agree.
 
+pub mod diff;
 pub mod fields;
 pub mod names;
 #[cfg(any(test, feature = "test-util"))]
@@ -11,7 +12,7 @@ mod timeline;
 use std::io::Read;
 
 use peel_trace::{Header, Record, TraceReader};
-pub use timeline::{Group, GroupKind, Grouping, Packet, Timeline, WINDOW_US};
+pub use timeline::{Group, GroupKey, GroupKind, Grouping, Packet, Timeline, WINDOW_US};
 
 /// A whole trace read into memory.
 pub struct Loaded {

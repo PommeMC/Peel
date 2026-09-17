@@ -2,6 +2,7 @@ import type { ReactNode, Ref } from "react";
 
 import type { Filter } from "../lib/filter";
 import {
+  count,
   DIRECTIONS,
   PHASES,
   directionLabel,
@@ -25,7 +26,7 @@ interface Props {
 }
 
 /** A pill that is pressed while its items are shown. */
-function Toggle({
+export function Toggle({
   pressed,
   tone,
   title,
@@ -136,8 +137,8 @@ export default function Filters({
       </div>
       <span className="filters-shown">
         {shown === total
-          ? `${thousands(total)} packets`
-          : `${thousands(shown)} of ${thousands(total)} packets`}
+          ? count(total, "packet")
+          : `${thousands(shown)} of ${count(total, "packet")}`}
       </span>
     </div>
   );

@@ -18,15 +18,20 @@ export interface Query {
   exclude: string[];
 }
 
+/** The non-empty terms of a list separated by commas or spaces. */
+export function splitTerms(text: string): string[] {
+  return text.split(/[\s,]+/).filter(Boolean);
+}
+
 /** Terms are separated by commas or spaces; a leading `-` excludes names
  * containing the rest. */
 export function parseQuery(query: string): Query {
   const include: string[] = [];
   const exclude: string[] = [];
-  for (const term of query.toLowerCase().split(/[\s,]+/)) {
+  for (const term of splitTerms(query.toLowerCase())) {
     if (term.startsWith("-")) {
       if (term.length > 1) exclude.push(term.slice(1));
-    } else if (term) {
+    } else {
       include.push(term);
     }
   }

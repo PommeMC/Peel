@@ -2,8 +2,6 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
-  useRef,
-  useState,
   type CSSProperties,
   type ReactNode,
   type Ref,
@@ -11,6 +9,7 @@ import {
 
 import {
   bytes,
+  count,
   groupLabel,
   hexId,
   packetName,
@@ -19,8 +18,13 @@ import {
 } from "../lib/format";
 import { findRecord, runHolds, runOf, type Row } from "../lib/rows";
 import type { Packet } from "../lib/trace";
-import { useClientSize } from "../lib/useClientSize";
 import { DirectionBadge, PhaseChip } from "./Badges";
+import GroupHeader, { Chevron } from "./GroupHeader";
+import VirtualList, {
+  handleKeys,
+  stepSelection,
+  useVirtualRows,
+} from "./VirtualList";
 
 export interface TimelineHandle {
   scrollToGroup(ordinal: number): void;
@@ -38,10 +42,6 @@ interface Props {
   onVisibleGroups(first: number, last: number): void;
 }
 
-const ROW_HEIGHT = 28;
-/** Rows rendered beyond each edge of the viewport, so fast scrolling doesn't flash. */
-const OVERSCAN = 12;
-
 export default function Timeline({
   ref,
   rows,
@@ -51,9 +51,7 @@ export default function Timeline({
   onToggleGroup,
   onVisibleGroups,
 }: Props) {
-  const viewport = useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const { height } = useClientSize(viewport);
+  const [viewport, list] = useVirtualRows(rows);
 
   /** Rows that hold a selection: packets, and runs while collapsed. */
   const selectable = useMemo(
@@ -70,50 +68,28 @@ export default function Timeline({
     [rows],
   );
 
-  const groupPositions = useMemo(
-    () =>
-      rows.flatMap((row, position) => (row.type === "group" ? [position] : [])),
-    [rows],
-  );
-
-  function scrollTo(position: number, align: "start" | "nearest") {
-    const element = viewport.current;
-    if (!element) return;
-    const top = position * ROW_HEIGHT;
-    if (align === "start" || top < element.scrollTop) {
-      element.scrollTop = top;
-    } else if (top + ROW_HEIGHT > element.scrollTop + element.clientHeight) {
-      element.scrollTop = top + ROW_HEIGHT - element.clientHeight;
-    }
-  }
-
   useImperativeHandle(ref, () => ({
     scrollToGroup(ordinal) {
       const position = rows.findIndex(
         (row) => row.type === "group" && row.ordinal >= ordinal,
       );
-      scrollTo(
-        position === -1 ? (groupPositions.at(-1) ?? 0) : position,
+      list.scrollTo(
+        position === -1 ? (list.groupPositions.at(-1) ?? 0) : position,
         "start",
       );
     },
     scrollToRecord(index) {
       const position = findRecord(rows, index);
-      const element = viewport.current;
-      if (position === -1 || !element) return;
-      element.scrollTop = position * ROW_HEIGHT - element.clientHeight / 2;
+      if (position !== -1) list.scrollTo(position, "center");
     },
   }));
 
   function step(by: number) {
-    if (selectable.length === 0) return;
-    const position = selected === null ? -1 : findRecord(rows, selected);
-    const current = selectable.findIndex((s) => s.position === position);
-    const target = current === -1 ? 0 : current + by;
-    const next =
-      selectable[Math.min(selectable.length - 1, Math.max(0, target))];
+    const current = selected === null ? -1 : findRecord(rows, selected);
+    const next = stepSelection(selectable, current, by);
+    if (!next) return;
     onSelect(next.index);
-    scrollTo(next.position, "nearest");
+    list.scrollTo(next.position, "nearest");
   }
 
   function toggleSelectedRun(open: boolean | null) {
@@ -124,17 +100,8 @@ export default function Timeline({
     }
   }
 
-  const topPosition = Math.min(
-    Math.floor(scrollTop / ROW_HEIGHT),
-    rows.length - 1,
-  );
-  const bottomPosition = Math.min(
-    Math.floor((scrollTop + height) / ROW_HEIGHT),
-    rows.length - 1,
-  );
-  const topRow = rows.at(topPosition);
-  const firstVisible = topRow?.ordinal;
-  const lastVisible = rows.at(bottomPosition)?.ordinal;
+  const firstVisible = rows.at(list.top)?.ordinal;
+  const lastVisible = rows.at(list.bottom)?.ordinal;
 
   useEffect(() => {
     if (firstVisible !== undefined && lastVisible !== undefined) {
@@ -142,18 +109,24 @@ export default function Timeline({
     }
   }, [firstVisible, lastVisible, onVisibleGroups]);
 
-  let stickyPosition: number | undefined;
-  if (topRow?.type !== "group") {
-    for (const position of groupPositions) {
-      if (position >= topPosition) break;
-      stickyPosition = position;
-    }
+  /** A group's header, placed by `style` or pinned when it has none. */
+  function header(position: number, style?: CSSProperties) {
+    const row = rows[position];
+    if (row.type !== "group") return null;
+    return (
+      <GroupHeader
+        key={position}
+        label={groupLabel(row.group)}
+        meta={`${packetTime(row.group.start_us)} · ${count(row.shown, "packet")}`}
+        open={!row.closed}
+        tone={row.group.kind}
+        rows={list}
+        position={position}
+        style={style}
+        onToggle={() => onToggleGroup(row.ordinal)}
+      />
+    );
   }
-  const sticky =
-    stickyPosition === undefined ? undefined : rows[stickyPosition];
-
-  const first = Math.max(0, topPosition - OVERSCAN);
-  const last = Math.min(rows.length, bottomPosition + 1 + OVERSCAN);
 
   return (
     <section className="timeline-panel">
@@ -165,133 +138,64 @@ export default function Timeline({
         <span className="numeric">Id</span>
         <span className="numeric">Length</span>
       </div>
-      <div
-        className="timeline"
-        ref={viewport}
-        tabIndex={0}
-        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-        onKeyDown={(event) => {
-          const keys: Record<string, () => void> = {
+      <VirtualList
+        viewport={viewport}
+        rows={list}
+        empty="No packets match the filters."
+        onKeyDown={(event) =>
+          handleKeys(event, {
             ArrowDown: () => step(1),
             ArrowUp: () => step(-1),
             ArrowRight: () => toggleSelectedRun(true),
             ArrowLeft: () => toggleSelectedRun(false),
             Enter: () => toggleSelectedRun(null),
-          };
-          const action = keys[event.key];
-          if (action) {
-            event.preventDefault();
-            action();
-          }
-        }}
-      >
-        {sticky?.type === "group" && stickyPosition !== undefined && (
-          <GroupHeader
-            row={sticky}
-            className="group-row sticky-group"
-            style={{ height: ROW_HEIGHT, marginBottom: -ROW_HEIGHT }}
-            onToggle={() => {
-              onToggleGroup(sticky.ordinal);
-              scrollTo(stickyPosition, "start");
-            }}
-          />
-        )}
-        <div
-          className="timeline-content"
-          style={{ height: rows.length * ROW_HEIGHT }}
-        >
-          {rows.slice(first, last).map((row, offset) => {
-            const position = first + offset;
-            const style = { top: position * ROW_HEIGHT, height: ROW_HEIGHT };
-            if (row.type === "group") {
-              return (
-                <GroupHeader
-                  key={position}
-                  row={row}
-                  className="row group-row"
-                  style={style}
-                  onToggle={() => onToggleGroup(row.ordinal)}
-                />
-              );
-            }
-            if (row.type === "run") {
-              const [head] = row.packets;
-              const holdsSelection =
-                !row.expanded && selected !== null && runHolds(row, selected);
-              return (
-                <div
-                  key={position}
-                  className={`row packet-row run-row${holdsSelection ? " selected" : ""}`}
-                  style={style}
-                  onClick={() => {
-                    onToggleRun(head.index);
-                    onSelect(head.index);
-                  }}
-                >
-                  <PacketCells
-                    packet={head}
-                    length={row.packets.reduce((sum, p) => sum + p.length, 0)}
-                    before={<Chevron open={row.expanded} />}
-                    after={
-                      <span className="run-count">
-                        ×{thousands(row.packets.length)}
-                      </span>
-                    }
-                  />
-                </div>
-              );
-            }
-            const { packet } = row;
+          })
+        }
+        renderSticky={(position) => header(position)}
+        renderRow={(position, style) => {
+          const row = rows[position];
+          if (row.type === "group") return header(position, style);
+          if (row.type === "run") {
+            const [head] = row.packets;
+            const holdsSelection =
+              !row.expanded && selected !== null && runHolds(row, selected);
             return (
               <div
                 key={position}
-                className={`row packet-row${row.inRun ? " in-run" : ""}${packet.index === selected ? " selected" : ""}`}
+                className={`row packet-row run-row${holdsSelection ? " selected" : ""}`}
                 style={style}
-                onClick={() => onSelect(packet.index)}
+                onClick={() => {
+                  onToggleRun(head.index);
+                  onSelect(head.index);
+                }}
               >
-                <PacketCells packet={packet} length={packet.length} />
+                <PacketCells
+                  packet={head}
+                  length={row.packets.reduce((sum, p) => sum + p.length, 0)}
+                  before={<Chevron open={row.expanded} />}
+                  after={
+                    <span className="run-count">
+                      ×{thousands(row.packets.length)}
+                    </span>
+                  }
+                />
               </div>
             );
-          })}
-        </div>
-        {rows.length === 0 && (
-          <p className="timeline-empty">No packets match the filters.</p>
-        )}
-      </div>
+          }
+          const { packet } = row;
+          return (
+            <div
+              key={position}
+              className={`row packet-row${row.inRun ? " in-run" : ""}${packet.index === selected ? " selected" : ""}`}
+              style={style}
+              onClick={() => onSelect(packet.index)}
+            >
+              <PacketCells packet={packet} length={packet.length} />
+            </div>
+          );
+        }}
+      />
     </section>
-  );
-}
-
-function Chevron({ open }: { open: boolean }) {
-  return <span className="chevron">{open ? "▾" : "▸"}</span>;
-}
-
-function GroupHeader({
-  row,
-  className,
-  style,
-  onToggle,
-}: {
-  row: Extract<Row, { type: "group" }>;
-  className: string;
-  style?: CSSProperties;
-  onToggle(): void;
-}) {
-  return (
-    <div
-      className={`${className} group-${row.group.kind}`}
-      style={style}
-      role="button"
-      aria-expanded={!row.closed}
-      onClick={onToggle}
-    >
-      <Chevron open={!row.closed} />
-      <span className="group-label">{groupLabel(row.group)}</span>
-      <span className="group-meta">
-        {packetTime(row.group.start_us)} · {thousands(row.shown)}{" "}
-        {row.shown === 1 ? "packet" : "packets"}
-      </span>
-    </div>
   );
 }
 

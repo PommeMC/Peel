@@ -5,7 +5,7 @@ use pomme_protocol::PacketTable;
 use pomme_protocol::version::LATEST;
 use pomme_protocol::wire::write_varint;
 
-use crate::names;
+use crate::{Loaded, names};
 
 pub fn packet(id: u32, body: &[u8]) -> Vec<u8> {
     let mut packet = Vec::new();
@@ -35,8 +35,19 @@ pub fn latest() -> &'static PacketTable {
 }
 
 pub fn record(protocol: i32, direction: Direction, phase: Phase, name: &str, us: u64) -> Record {
+    record_with_body(protocol, direction, phase, name, &[0; 4], us)
+}
+
+pub fn record_with_body(
+    protocol: i32,
+    direction: Direction,
+    phase: Phase,
+    name: &str,
+    body: &[u8],
+    us: u64,
+) -> Record {
     let table = PacketTable::for_protocol(protocol).unwrap();
-    let (packet_id, frame) = named(table, phase, direction, name, &[0; 4]);
+    let (packet_id, frame) = named(table, phase, direction, name, body);
     Record {
         timestamp_us: us,
         protocol,
@@ -44,6 +55,19 @@ pub fn record(protocol: i32, direction: Direction, phase: Phase, name: &str, us:
         phase,
         packet_id,
         frame,
+    }
+}
+
+/// A trace of `records`, as if read from a file.
+pub fn loaded(records: Vec<Record>) -> Loaded {
+    Loaded {
+        format_version: peel_trace::FORMAT_VERSION,
+        header: peel_trace::Header {
+            started_at_unix_ms: 0,
+            recorder: "test".into(),
+        },
+        records,
+        error: None,
     }
 }
 

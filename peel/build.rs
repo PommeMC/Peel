@@ -40,10 +40,15 @@ fn main() {
     .expect("writing the viewer asset table");
 }
 
-/// Every file under `dir`, keyed by its URL path relative to `root`.
+/// Every file under `dir`, keyed by its URL path relative to `root`, except
+/// hosting configuration such as `_headers`, whose names start with `_`.
 fn collect(root: &Path, dir: &Path, assets: &mut Vec<(String, PathBuf)>) {
     for entry in fs::read_dir(dir).expect("reading viewer/dist") {
-        let path = entry.expect("reading viewer/dist").path();
+        let entry = entry.expect("reading viewer/dist");
+        if entry.file_name().to_string_lossy().starts_with('_') {
+            continue;
+        }
+        let path = entry.path();
         if path.is_dir() {
             collect(root, &path, assets);
         } else {

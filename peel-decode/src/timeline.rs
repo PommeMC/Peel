@@ -1,3 +1,5 @@
+use std::fmt;
+
 use peel_trace::{Direction, Header, Phase, Record};
 use pomme_protocol::{PacketTable, ProtocolVersion};
 use serde::Serialize;
@@ -38,6 +40,29 @@ pub enum GroupKind {
     Setup,
     Tick,
     Window,
+}
+
+/// Which group a packet falls in, comparable across traces.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[serde(tag = "kind", content = "index", rename_all = "snake_case")]
+pub enum GroupKey {
+    Setup,
+    Tick(i64),
+    Window(i64),
+}
+
+impl fmt::Display for GroupKey {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::Setup => write!(f, "before first tick"),
+            Self::Tick(n) => write!(f, "tick {n}"),
+            Self::Window(n) => write!(
+                f,
+                "window +{:.3}s (approximate)",
+                (n * WINDOW_US as i64) as f64 / 1e6
+            ),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -145,6 +170,15 @@ fn group(records: &[Record]) -> (Grouping, Vec<Group>) {
 }
 
 impl Group {
+    pub fn key(&self) -> GroupKey {
+        let index = self.index as i64;
+        match self.kind {
+            GroupKind::Setup => GroupKey::Setup,
+            GroupKind::Tick => GroupKey::Tick(index),
+            GroupKind::Window => GroupKey::Window(index),
+        }
+    }
+
     fn new(kind: GroupKind, index: u64, start_us: u64) -> Self {
         Self {
             kind,

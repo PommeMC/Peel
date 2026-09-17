@@ -1,6 +1,6 @@
 import { useRef, type PointerEvent } from "react";
 
-import { groupLabel, thousands } from "../lib/format";
+import { count, groupLabel } from "../lib/format";
 import type { Group } from "../lib/trace";
 import { useClientSize } from "../lib/useClientSize";
 
@@ -31,7 +31,7 @@ export default function Activity({ groups, counts, visible, onJump }: Props) {
     (_, i) =>
       counts
         .slice(i * perBucket, (i + 1) * perBucket)
-        .reduce((sum, count) => sum + count, 0),
+        .reduce((sum, n) => sum + n, 0),
   );
   const tallest = Math.max(1, ...bars);
   const bucketOf = (ordinal: number) => Math.floor(ordinal / perBucket);
@@ -67,8 +67,8 @@ export default function Activity({ groups, counts, visible, onJump }: Props) {
             height={HEIGHT}
           />
         )}
-        {bars.map((count, i) => {
-          const barHeight = (count / tallest) * (HEIGHT - 6);
+        {bars.map((packets, i) => {
+          const barHeight = (packets / tallest) * (HEIGHT - 6);
           const firstGroup = groups[i * perBucket];
           const lastGroup =
             groups[Math.min(groups.length, (i + 1) * perBucket) - 1];
@@ -85,7 +85,7 @@ export default function Activity({ groups, counts, visible, onJump }: Props) {
               width={Math.max(1, barWidth - 1)}
               height={barHeight}
             >
-              <title>{`${range} · ${thousands(count)} packets`}</title>
+              <title>{`${range} · ${count(packets, "packet")}`}</title>
             </rect>
           );
         })}

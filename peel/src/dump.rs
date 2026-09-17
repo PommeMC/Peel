@@ -1,13 +1,13 @@
 //! `peel dump`: prints a trace grouped by tick.
 
-use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use peel_decode::fields::{Decoded, Field};
-use peel_decode::{GroupKind, Grouping, Timeline, WINDOW_US, names};
-use peel_trace::Direction;
+use peel_decode::{Timeline, names};
+
+use crate::cli::{self, direction_label};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -22,26 +22,18 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    let file =
-        File::open(&args.trace).with_context(|| format!("opening {}", args.trace.display()))?;
-    let loaded = peel_decode::load(BufReader::new(file))
-        .with_context(|| format!("reading {}", args.trace.display()))?;
+    let (_, loaded) = cli::read_trace(&args.trace)?;
     let mut timeline = loaded.timeline();
     if args.fields {
         timeline.decode_fields(&loaded.records);
     }
-    let mut out = BufWriter::new(io::stdout().lock());
-    let written = if args.json {
-        serde_json::to_writer_pretty(&mut out, &timeline)
-            .map_err(io::Error::other)
-            .and_then(|()| writeln!(out))
-    } else {
-        write_text(&timeline, &mut out)
-    };
-    match written.and_then(|()| out.flush()) {
-        Err(err) if err.kind() != io::ErrorKind::BrokenPipe => return Err(err.into()),
-        _ => {}
-    }
+    cli::print(|out| {
+        if args.json {
+            cli::write_json(out, &timeline)
+        } else {
+            write_text(&timeline, out)
+        }
+    })?;
     if args.fields {
         eprintln!("peel: {}", field_summary(&timeline));
     }
@@ -70,42 +62,18 @@ fn write_text(timeline: &Timeline, out: &mut impl Write) -> io::Result<()> {
         "trace format {}, recorded by {}, started at unix ms {}",
         timeline.format_version, timeline.recorder, timeline.started_at_unix_ms
     )?;
-    match (timeline.protocol, timeline.version) {
-        (None, _) => return writeln!(out, "no packets recorded"),
-        (Some(protocol), Some(version)) => writeln!(out, "protocol {protocol} ({version})")?,
-        (Some(protocol), None) => writeln!(
-            out,
-            "protocol {protocol} (not supported by this build of Peel: no packet names)"
-        )?,
-    }
-    match timeline.grouping {
-        Grouping::Tick => writeln!(out, "grouped by tick (serverbound client_tick_end)")?,
-        Grouping::Approximate => writeln!(
-            out,
-            "APPROXIMATE: this protocol has no client_tick_end tick marker (added in 768), \
-             so packets are grouped into {} ms timestamp windows, not ticks",
-            WINDOW_US / 1000
-        )?,
-    }
+    let Some(protocol) = timeline.protocol else {
+        return writeln!(out, "no packets recorded");
+    };
+    cli::write_version(out, protocol, timeline.version, timeline.grouping)?;
     for group in &timeline.groups {
-        match group.kind {
-            GroupKind::Setup => writeln!(out, "\nbefore first tick")?,
-            GroupKind::Tick => writeln!(out, "\ntick {}", group.index)?,
-            GroupKind::Window => writeln!(
-                out,
-                "\nwindow +{:.3}s (approximate)",
-                seconds(group.start_us)
-            )?,
-        }
+        writeln!(out, "\n{}", group.key())?;
         for p in &group.packets {
             writeln!(
                 out,
                 "  {:>12}  {}  {:<13}  {:<32}  0x{:02x}  {} B",
                 format!("+{:.6}s", seconds(p.timestamp_us)),
-                match p.direction {
-                    Direction::Serverbound => "to server",
-                    Direction::Clientbound => "to client",
-                },
+                direction_label(p.direction),
                 names::phase_label(p.phase),
                 p.name.unwrap_or("?"),
                 p.id,
@@ -146,9 +114,8 @@ fn seconds(us: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use peel_decode::test_util::{named, session};
-    use peel_trace::{FORMAT_VERSION, Header, Phase, Record};
-    use pomme_protocol::PacketTable;
+    use peel_decode::test_util::{record_with_body, session};
+    use peel_trace::{Direction, FORMAT_VERSION, Header, Phase};
     use pomme_protocol::version::LATEST;
 
     use super::*;
@@ -169,25 +136,17 @@ mod tests {
     #[test]
     fn fields_print_under_their_packet() {
         let protocol = LATEST.protocol;
-        let table = PacketTable::for_protocol(protocol).unwrap();
-        let (packet_id, frame) = named(
-            table,
-            Phase::Game,
-            Direction::Clientbound,
-            "keep_alive",
-            &5i64.to_be_bytes(),
-        );
         // The session's packets carry 4 zero bytes, too few or too many for
         // most decoders.
         let mut records = session(protocol, "client_tick_end");
-        records.push(Record {
-            timestamp_us: 130_000,
+        records.push(record_with_body(
             protocol,
-            direction: Direction::Clientbound,
-            phase: Phase::Game,
-            packet_id,
-            frame,
-        });
+            Direction::Clientbound,
+            Phase::Game,
+            "keep_alive",
+            &5i64.to_be_bytes(),
+            130_000,
+        ));
         let header = header();
         let mut timeline = Timeline::build(FORMAT_VERSION, &header, &records);
         timeline.decode_fields(&records);
