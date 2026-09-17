@@ -7,7 +7,7 @@ use pomme_protocol::ClientRegistry;
 use super::super::decoder::set_bits;
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder, count};
-use super::{V1_21_5, V26_1, V26_3, game, nbt};
+use super::{V1_21_5, V26_1, V26_3, game, nbt, raw_id};
 
 pub static DECODERS: &[PacketDecoder] = &[
     game(
@@ -37,6 +37,15 @@ pub static DECODERS: &[PacketDecoder] = &[
         d.var_int("x")?;
         d.var_int("z")?;
         light(d)
+    }),
+    game(Clientbound, "chunks_biomes", OLDEST..=NEWEST, |d| {
+        d.list("chunks", |d, name| {
+            d.group(name, |d| {
+                d.chunk_pos("pos")?;
+                section_buffer(d, "biomes", false, |d| palette(d, &BIOMES))
+            })
+        })?;
+        Ok(())
     }),
     game(Clientbound, "section_blocks_update", OLDEST..=NEWEST, |d| {
         d.read("section", Reader::i64, |&packed| {
@@ -111,12 +120,17 @@ const BIOMES: Strategy = Strategy {
     min_storage_bits: 1,
 };
 
-/// The section buffer: one section per 16 blocks of the dimension's height,
-/// which the packet doesn't say. 1.20.1 and 1.21.5 overestimate the buffer's
-/// size, so it can end in zero bytes vanilla never reads.
-fn sections(d: &mut Decoder) -> Result<()> {
-    let padded = matches!(d.protocol(), OLDEST | V1_21_5);
-    let sections = d.group("sections", |d| {
+/// A length-prefixed buffer of sections, one per 16 blocks of the
+/// dimension's height, which the packet doesn't say. 1.20.1 and 1.21.5
+/// overestimate a chunk's buffer size, so it can end in zero bytes vanilla
+/// never reads.
+fn section_buffer(
+    d: &mut Decoder,
+    name: &'static str,
+    padded: bool,
+    section: impl Fn(&mut Decoder) -> Result<()>,
+) -> Result<()> {
+    let sections = d.group(name, |d| {
         let len = d.reader().count()?;
         let end = d.reader().pos() + len;
         if len > d.reader().remaining() {
@@ -131,14 +145,7 @@ fn sections(d: &mut Decoder) -> Result<()> {
                 d.bytes("padding", left)?;
                 break;
             }
-            d.group(sections.to_string(), |d| {
-                d.i16("block_count")?;
-                if d.protocol() >= V26_1 {
-                    d.i16("fluid_count")?;
-                }
-                paletted(d, "block_states", &BLOCK_STATES)?;
-                paletted(d, "biomes", &BIOMES)
-            })?;
+            d.group(sections.to_string(), &section)?;
             sections += 1;
         }
         if d.reader().pos() != end {
@@ -152,40 +159,56 @@ fn sections(d: &mut Decoder) -> Result<()> {
     Ok(())
 }
 
+fn sections(d: &mut Decoder) -> Result<()> {
+    let padded = matches!(d.protocol(), OLDEST | V1_21_5);
+    section_buffer(d, "sections", padded, |d| {
+        d.i16("block_count")?;
+        if d.protocol() >= V26_1 {
+            d.i16("fluid_count")?;
+        }
+        paletted(d, "block_states", &BLOCK_STATES)?;
+        paletted(d, "biomes", &BIOMES)
+    })
+}
+
 /// `PalettedContainer`: bits per entry, a palette, then the packed ids, whose
 /// long count is on the wire until 1.21.5.
 fn paletted(d: &mut Decoder, name: &'static str, strategy: &Strategy) -> Result<()> {
-    d.group(name, |d| {
-        let bits = d.u8("bits")?;
-        let storage_bits = match bits {
-            0 => {
-                d.raw_id("value")?;
-                Some(0)
-            }
-            bits if bits <= strategy.max_palette_bits => {
-                d.list("palette", |d, name| d.raw_id(name).map(drop))?;
-                Some(bits.max(strategy.min_storage_bits))
-            }
-            _ => None,
-        };
-        if d.protocol() < V1_21_5 {
-            d.long_array("data")?;
-            return Ok(());
+    d.group(name, |d| palette(d, strategy))
+}
+
+fn palette(d: &mut Decoder, strategy: &Strategy) -> Result<()> {
+    let bits = d.u8("bits")?;
+    let storage_bits = match bits {
+        0 => {
+            d.raw_id("value")?;
+            Some(0)
         }
-        let Some(storage_bits) = storage_bits else {
-            return Err(d.reader().unsupported(
-                "the data of a global palette, whose size depends on the dimension's block states or biomes,",
-            ));
-        };
-        let longs = match storage_bits {
-            0 => 0,
-            bits => strategy.entries.div_ceil(64 / usize::from(bits)),
-        };
-        d.read("data", |r| r.bytes(longs * 8, "palette data"), |b| {
-            count(b.len() / 8, "long")
-        })?;
-        Ok(())
-    })
+        bits if bits <= strategy.max_palette_bits => {
+            d.list("palette", raw_id)?;
+            Some(bits.max(strategy.min_storage_bits))
+        }
+        _ => None,
+    };
+    if d.protocol() < V1_21_5 {
+        d.long_array("data")?;
+        return Ok(());
+    }
+    let Some(storage_bits) = storage_bits else {
+        return Err(d.reader().unsupported(
+            "the data of a global palette, whose size depends on the dimension's block states or biomes,",
+        ));
+    };
+    let longs = match storage_bits {
+        0 => 0,
+        bits => strategy.entries.div_ceil(64 / usize::from(bits)),
+    };
+    d.read(
+        "data",
+        |r| r.bytes(longs * 8, "palette data"),
+        |b| count(b.len() / 8, "long"),
+    )?;
+    Ok(())
 }
 
 /// `ClientboundLightUpdatePacketData`.
@@ -412,6 +435,40 @@ mod tests {
                 "blocks: 1 item [9..13]",
                 "  0: #9 at 1, 2, 3 [10..13]",
             ],
+        );
+    }
+
+    #[test]
+    fn chunks_biomes() {
+        let pos = ((2i64 << 32) | 1).to_be_bytes();
+        let head = [
+            "chunks: 1 item [1..END]",
+            "  0:  [2..END]",
+            "    pos: 1, 2 [2..10]",
+            "    biomes: 1 section [10..END]",
+            "      0:  [11..END]",
+            "        bits: 0 [11..12]",
+            "        value: #5 [12..13]",
+        ];
+        let lines = |end: usize, data: &str| {
+            let mut lines: Vec<String> = head
+                .iter()
+                .map(|line| line.replace("END", &end.to_string()))
+                .collect();
+            lines.push(format!("        data: 0 longs {data}"));
+            lines
+        };
+        check(
+            OLDEST..=V1_21_5 - 1,
+            "chunks_biomes",
+            &[&[1][..], &pos, &[3, 0, 5, 0]].concat(),
+            &lines(14, "[13..14]"),
+        );
+        check(
+            V1_21_5..=NEWEST,
+            "chunks_biomes",
+            &[&[1][..], &pos, &[2, 0, 5]].concat(),
+            &lines(13, "[13..13]"),
         );
     }
 }

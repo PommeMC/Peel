@@ -4,9 +4,12 @@ use peel_trace::Direction::Serverbound;
 
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder};
+use super::entities::vehicle_position;
+use super::session::GAME_TYPES;
+use super::world::{difficulty, game_rules};
 use super::{
-    DIRECTION, HAND, V1_20_2, V1_21, V1_21_2, V1_21_4, V1_21_6, V1_21_11, V26_1, V26_2, V26_3,
-    game, rotation,
+    DIRECTION, HAND, V1_20_2, V1_20_5, V1_21, V1_21_2, V1_21_4, V1_21_6, V1_21_9, V1_21_11, V26_1,
+    V26_2, V26_3, game, optional_var_int, raw_id, rotation,
 };
 
 pub static DECODERS: &[PacketDecoder] = &[
@@ -149,13 +152,83 @@ pub static DECODERS: &[PacketDecoder] = &[
         Ok(())
     }),
     game(Serverbound, "move_vehicle", OLDEST..=NEWEST, |d| {
-        d.vec3("position")?;
-        rotation(d)?;
+        vehicle_position(d)?;
         if d.protocol() >= V1_21_4 {
             d.bool("on_ground")?;
         }
         Ok(())
     }),
+    game(
+        Serverbound,
+        "change_difficulty",
+        OLDEST..=NEWEST,
+        difficulty,
+    ),
+    game(Serverbound, "lock_difficulty", OLDEST..=NEWEST, |d| {
+        d.bool("locked")?;
+        Ok(())
+    }),
+    game(Serverbound, "change_game_mode", V1_21_6..=NEWEST, |d| {
+        d.variant("game_mode", Reader::var_int, GAME_TYPES)?;
+        Ok(())
+    }),
+    game(Serverbound, "client_command", OLDEST..=NEWEST, |d| {
+        let actions = &[
+            "perform_respawn",
+            "request_stats",
+            "request_gamerule_values",
+        ];
+        let known = if d.protocol() >= V26_1 { 3 } else { 2 };
+        d.variant("action", Reader::var_int, &actions[..known])?;
+        Ok(())
+    }),
+    game(Serverbound, "command_suggestion", OLDEST..=NEWEST, |d| {
+        d.var_int("id")?;
+        d.string("command")?;
+        Ok(())
+    }),
+    game(Serverbound, "teleport_to_entity", OLDEST..=NEWEST, |d| {
+        d.uuid("uuid")?;
+        Ok(())
+    }),
+    game(Serverbound, "spectate_entity", V26_1..=V26_1, |d| {
+        d.var_int("entity_id")?;
+        Ok(())
+    }),
+    game(Serverbound, "spectator_action", V26_2..=NEWEST, |d| {
+        optional_var_int(d, "spectate_entity_id")
+    }),
+    game(Serverbound, "bundle_item_selected", V1_21_2..=NEWEST, |d| {
+        d.var_int("slot_id")?;
+        d.var_int("selected_item_index")?;
+        Ok(())
+    }),
+    game(Serverbound, "seen_advancements", OLDEST..=NEWEST, |d| {
+        let action = d.variant("action", Reader::var_int, &["opened_tab", "closed_screen"])?;
+        if action == 0 {
+            d.string("tab")?;
+        }
+        Ok(())
+    }),
+    game(Serverbound, "set_game_rule", V26_1..=NEWEST, game_rules),
+    game(
+        Serverbound,
+        "debug_sample_subscription",
+        V1_20_5..=V1_21_9 - 1,
+        |d| {
+            d.variant("sample_type", Reader::var_int, &["tick_time"])?;
+            Ok(())
+        },
+    ),
+    game(
+        Serverbound,
+        "debug_subscription_request",
+        V1_21_9..=NEWEST,
+        |d| {
+            d.list("subscriptions", raw_id)?;
+            Ok(())
+        },
+    ),
     game(Serverbound, "paddle_boat", OLDEST..=NEWEST, |d| {
         d.bool("left")?;
         d.bool("right")?;
@@ -537,6 +610,124 @@ mod tests {
             "move_vehicle",
             &[&body[..], &[1]].concat(),
             &[&expected[..], &["on_ground: true [33..34]"]].concat(),
+        );
+    }
+
+    #[test]
+    fn difficulty_game_mode_and_commands() {
+        check(
+            OLDEST..=NEWEST,
+            "change_difficulty",
+            &[3],
+            &["difficulty: hard (3) [1..2]"],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "lock_difficulty",
+            &[1],
+            &["locked: true [1..2]"],
+        );
+        check(
+            V1_21_6..=NEWEST,
+            "change_game_mode",
+            &[3],
+            &["game_mode: spectator (3) [1..2]"],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "client_command",
+            &[1],
+            &["action: request_stats (1) [1..2]"],
+        );
+        check(
+            OLDEST..=V26_1 - 1,
+            "client_command",
+            &[2],
+            &["action: unknown (2) [1..2]"],
+        );
+        check(
+            V26_1..=NEWEST,
+            "client_command",
+            &[2],
+            &["action: request_gamerule_values (2) [1..2]"],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "command_suggestion",
+            &[1, 2, b'/', b'a'],
+            &["id: 1 [1..2]", "command: \"/a\" [2..5]"],
+        );
+    }
+
+    #[test]
+    fn spectating_and_bundles() {
+        check(
+            OLDEST..=NEWEST,
+            "teleport_to_entity",
+            &[0x12; 16],
+            &["uuid: 12121212-1212-1212-1212-121212121212 [1..17]"],
+        );
+        check(
+            V26_1..=V26_1,
+            "spectate_entity",
+            &[5],
+            &["entity_id: 5 [1..2]"],
+        );
+        check(
+            V26_2..=NEWEST,
+            "spectator_action",
+            &[0],
+            &["spectate_entity_id: none [1..2]"],
+        );
+        check(
+            V26_2..=NEWEST,
+            "spectator_action",
+            &[6],
+            &["spectate_entity_id: 5 [1..2]"],
+        );
+        check(
+            V1_21_2..=NEWEST,
+            "bundle_item_selected",
+            &[3, 2],
+            &["slot_id: 3 [1..2]", "selected_item_index: 2 [2..3]"],
+        );
+    }
+
+    #[test]
+    fn advancement_tabs_game_rules_and_debug() {
+        check(
+            OLDEST..=NEWEST,
+            "seen_advancements",
+            &[0, 3, b'a', b':', b'b'],
+            &["action: opened_tab (0) [1..2]", "tab: \"a:b\" [2..6]"],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "seen_advancements",
+            &[1],
+            &["action: closed_screen (1) [1..2]"],
+        );
+        check(
+            V26_1..=NEWEST,
+            "set_game_rule",
+            &[1, 3, b'a', b':', b'b', 4, b't', b'r', b'u', b'e'],
+            &["game_rules: 1 item [1..11]", "  0: a:b: true [2..11]"],
+        );
+        check(
+            V1_20_5..=V1_21_9 - 1,
+            "debug_sample_subscription",
+            &[0],
+            &["sample_type: tick_time (0) [1..2]"],
+        );
+        check(
+            V1_21_9..=NEWEST,
+            "debug_subscription_request",
+            &[2, 1, 4],
+            &[
+                "subscriptions: 2 items [1..4]",
+                "  0: #1 [2..3]",
+                "  1: #4 [3..4]",
+            ],
         );
     }
 }

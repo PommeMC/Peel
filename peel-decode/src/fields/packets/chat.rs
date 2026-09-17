@@ -4,9 +4,9 @@ use peel_trace::Direction::{Clientbound, Serverbound};
 
 use super::super::decoder::set_bits;
 use super::super::reader::{Reader, Result};
-use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder};
+use super::super::{Decoder, NEWEST, Name, OLDEST, PacketDecoder};
 use super::text::{component, optional_component};
-use super::{V1_20_5, V1_21, V1_21_5, V26_3, game, nbt};
+use super::{V1_20_5, V1_21, V1_21_5, V26_3, game, nbt, string, variant};
 
 pub static DECODERS: &[PacketDecoder] = &[
     game(Clientbound, "system_chat", OLDEST..=NEWEST, |d| {
@@ -25,12 +25,7 @@ pub static DECODERS: &[PacketDecoder] = &[
             d.string("content")?;
             d.i64("timestamp")?;
             d.i64("salt")?;
-            d.list("last_seen", |d, name| {
-                d.prefixed(Reader::var_int, |d, id| match id {
-                    0 => signature(d, name),
-                    id => d.note(name, &format!("cached #{}", id - 1)),
-                })
-            })?;
+            d.list("last_seen", packed_signature)?;
             Ok(())
         })?;
         optional_component(d, "unsigned_content")?;
@@ -41,6 +36,31 @@ pub static DECODERS: &[PacketDecoder] = &[
         component(d, "message")?;
         chat_type(d)
     }),
+    game(Clientbound, "delete_chat", OLDEST..=NEWEST, |d| {
+        packed_signature(d, "message_signature".into())
+    }),
+    game(Clientbound, "command_suggestions", OLDEST..=NEWEST, |d| {
+        d.var_int("id")?;
+        d.var_int("start")?;
+        d.var_int("length")?;
+        d.list("suggestions", |d, name| {
+            d.group(name, |d| {
+                d.string("text")?;
+                optional_component(d, "tooltip")
+            })
+        })?;
+        Ok(())
+    }),
+    game(
+        Clientbound,
+        "custom_chat_completions",
+        OLDEST..=NEWEST,
+        |d| {
+            d.variant("action", Reader::var_int, &["add", "remove", "set"])?;
+            d.list("entries", string)?;
+            Ok(())
+        },
+    ),
     game(Clientbound, "set_action_bar_text", OLDEST..=NEWEST, text),
     game(Clientbound, "set_title_text", OLDEST..=NEWEST, text),
     game(Clientbound, "set_subtitle_text", OLDEST..=NEWEST, text),
@@ -48,6 +68,57 @@ pub static DECODERS: &[PacketDecoder] = &[
         d.i32("fade_in")?;
         d.i32("stay")?;
         d.i32("fade_out")?;
+        Ok(())
+    }),
+    game(Clientbound, "clear_titles", OLDEST..=NEWEST, |d| {
+        d.bool("reset_times")?;
+        Ok(())
+    }),
+    game(Clientbound, "boss_event", OLDEST..=NEWEST, |d| {
+        d.uuid("id")?;
+        let operation = d.variant(
+            "operation",
+            Reader::var_int,
+            &[
+                "add",
+                "remove",
+                "update_progress",
+                "update_name",
+                "update_style",
+                "update_properties",
+            ],
+        )?;
+        if matches!(operation, 0 | 3) {
+            component(d, "name")?;
+        }
+        if matches!(operation, 0 | 2) {
+            d.f32("progress")?;
+        }
+        if matches!(operation, 0 | 4) {
+            d.variant(
+                "color",
+                Reader::var_int,
+                &["pink", "blue", "red", "green", "yellow", "purple", "white"],
+            )?;
+            d.variant(
+                "overlay",
+                Reader::var_int,
+                &[
+                    "progress",
+                    "notched_6",
+                    "notched_10",
+                    "notched_12",
+                    "notched_20",
+                ],
+            )?;
+        }
+        if matches!(operation, 0 | 5) {
+            d.flags(
+                "flags",
+                Reader::u8,
+                &["darken_screen", "play_music", "create_world_fog"],
+            )?;
+        }
         Ok(())
     }),
     game(Clientbound, "tab_list", OLDEST..=NEWEST, |d| {
@@ -111,9 +182,18 @@ fn text(d: &mut Decoder) -> Result<()> {
 }
 
 /// `MessageSignature`: 256 bytes, no length.
-fn signature(d: &mut Decoder, name: super::super::Name) -> Result<()> {
+fn signature(d: &mut Decoder, name: Name) -> Result<()> {
     d.bytes(name, 256)?;
     Ok(())
+}
+
+/// `MessageSignature.Packed`: 0 and a full signature, or a cached signature's
+/// index plus one.
+fn packed_signature(d: &mut Decoder, name: Name) -> Result<()> {
+    d.prefixed(Reader::var_int, |d, id| match id {
+        0 => signature(d, name),
+        id => d.note(name, &format!("cached #{}", id - 1)),
+    })
 }
 
 /// `FilterMask`: a type, then a bit set for partial filtering, as longs until
@@ -159,8 +239,7 @@ fn decoration(d: &mut Decoder, name: &'static str) -> Result<()> {
     d.group(name, |d| {
         d.string("translation_key")?;
         d.list("parameters", |d, name| {
-            d.variant(name, Reader::var_int, &["sender", "target", "content"])?;
-            Ok(())
+            variant(d, name, &["sender", "target", "content"])
         })?;
         nbt::root(d, "style")?;
         Ok(())
@@ -529,6 +608,102 @@ mod tests {
                 "public_key: 2 bytes [25..28]",
                 "key_signature: 1 byte [28..30]",
             ],
+        );
+    }
+
+    #[test]
+    fn deleting_and_suggesting() {
+        check(
+            Clientbound,
+            OLDEST..=NEWEST,
+            "delete_chat",
+            &[5],
+            &["message_signature: cached #4 [1..2]"],
+        );
+        check(
+            Clientbound,
+            OLDEST..=NEWEST,
+            "delete_chat",
+            &[&[0][..], &[7; 256]].concat(),
+            &["message_signature: 256 bytes [1..258]"],
+        );
+        check(
+            Clientbound,
+            V1_20_3..=NEWEST,
+            "command_suggestions",
+            &[1, 0, 3, 1, 2, b't', b'p', 1, 8, 0, 1, b'x'],
+            &[
+                "id: 1 [1..2]",
+                "start: 0 [2..3]",
+                "length: 3 [3..4]",
+                "suggestions: 1 item [4..13]",
+                "  0:  [5..13]",
+                "    text: \"tp\" [5..8]",
+                "    tooltip: \"x\" [8..13]",
+            ],
+        );
+        check(
+            Clientbound,
+            OLDEST..=NEWEST,
+            "custom_chat_completions",
+            &[2, 1, 1, b'a'],
+            &[
+                "action: set (2) [1..2]",
+                "entries: 1 item [2..5]",
+                "  0: \"a\" [3..5]",
+            ],
+        );
+    }
+
+    #[test]
+    fn titles_and_boss_bars() {
+        check(
+            Clientbound,
+            OLDEST..=NEWEST,
+            "clear_titles",
+            &[1],
+            &["reset_times: true [1..2]"],
+        );
+        let id = format!("id: {UUID_TEXT} [1..17]");
+        check(
+            Clientbound,
+            V1_20_3..=NEWEST,
+            "boss_event",
+            &[
+                &UUID[..],
+                &[0, 8, 0, 1, b'N'],
+                &0.5f32.to_be_bytes(),
+                &[2, 1, 5],
+            ]
+            .concat(),
+            &[
+                &id,
+                "operation: add (0) [17..18]",
+                "name: \"N\" [18..22]",
+                "progress: 0.5 [22..26]",
+                "color: red (2) [26..27]",
+                "overlay: notched_6 (1) [27..28]",
+                "flags: 0x05 darken_screen | create_world_fog [28..29]",
+            ],
+        );
+        check(
+            Clientbound,
+            OLDEST..=NEWEST,
+            "boss_event",
+            &[&UUID[..], &[4, 6, 4]].concat(),
+            &[
+                &id,
+                "operation: update_style (4) [17..18]",
+                "color: white (6) [18..19]",
+                "overlay: notched_20 (4) [19..20]",
+            ],
+        );
+        check(
+            Clientbound,
+            OLDEST..=NEWEST,
+            "boss_event",
+            &[&UUID[..], &[1]].concat(),
+            &[&id, "operation: remove (1) [17..18]"],
         );
     }
 }

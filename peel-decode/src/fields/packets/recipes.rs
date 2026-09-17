@@ -1,15 +1,46 @@
 //! Recipe book packets. 1.21.2 replaced the recipe ids of `recipe` with
 //! display entries and moved recipe data to the server.
 
-use peel_trace::Direction::Clientbound;
+use peel_trace::Direction::{Clientbound, Serverbound};
 use pomme_protocol::ClientRegistry;
 
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, Name, OLDEST, PacketDecoder};
-use super::items::item_stack;
-use super::{V1_20_3, V1_20_5, V1_21_2, game, holder_set, string};
+use super::items::{container_id, item_stack};
+use super::{V1_20_3, V1_20_5, V1_21_2, game, holder_set, string, var_int};
 
 pub static DECODERS: &[PacketDecoder] = &[
+    game(Serverbound, "place_recipe", OLDEST..=NEWEST, |d| {
+        container_id(d, true)?;
+        recipe_id(d)?;
+        d.bool("use_max_items")?;
+        Ok(())
+    }),
+    game(Clientbound, "place_ghost_recipe", OLDEST..=NEWEST, |d| {
+        container_id(d, true)?;
+        if d.protocol() < V1_21_2 {
+            return recipe_id(d);
+        }
+        let display = d.raw_id("display")?;
+        Err(d.reader().unsupported(format!("recipe display #{display}")))
+    }),
+    game(
+        Serverbound,
+        "recipe_book_seen_recipe",
+        OLDEST..=NEWEST,
+        recipe_id,
+    ),
+    game(
+        Serverbound,
+        "recipe_book_change_settings",
+        OLDEST..=NEWEST,
+        |d| {
+            d.variant("book_type", Reader::var_int, RECIPE_BOOKS)?;
+            d.bool("is_open")?;
+            d.bool("is_filtering")?;
+            Ok(())
+        },
+    ),
     game(Clientbound, "recipe", OLDEST..=V1_21_2 - 1, |d| {
         let state = d.variant("state", Reader::var_int, &["init", "add", "remove"])?;
         book_settings(d)?;
@@ -37,7 +68,7 @@ pub static DECODERS: &[PacketDecoder] = &[
         Ok(())
     }),
     game(Clientbound, "recipe_book_remove", V1_21_2..=NEWEST, |d| {
-        d.list("display_ids", |d, name| d.var_int(name).map(drop))?;
+        d.list("display_ids", var_int)?;
         Ok(())
     }),
     game(Clientbound, "update_recipes", OLDEST..=V1_21_2 - 1, |d| {
@@ -166,9 +197,22 @@ fn ingredient(d: &mut Decoder, name: Name) -> Result<()> {
     d.list(name, item_stack).map(drop)
 }
 
+/// `RecipeBookType`.
+const RECIPE_BOOKS: &[&str] = &["crafting", "furnace", "blast_furnace", "smoker"];
+
+/// A recipe the player picked: its id until 1.21.2 sent a display id.
+fn recipe_id(d: &mut Decoder) -> Result<()> {
+    if d.protocol() >= V1_21_2 {
+        d.var_int("recipe")?;
+    } else {
+        d.string("recipe")?;
+    }
+    Ok(())
+}
+
 /// `RecipeBookSettings`: whether each recipe book is open and filtering.
 fn book_settings(d: &mut Decoder) -> Result<()> {
-    for book in ["crafting", "furnace", "blast_furnace", "smoker"] {
+    for book in RECIPE_BOOKS {
         d.bool(format!("{book}_open"))?;
         d.bool(format!("{book}_filtering"))?;
     }
@@ -365,6 +409,69 @@ mod tests {
                 "    serializer: #0 [6..7]",
             ],
             (7, "recipe serializer #0 isn't decoded yet"),
+        );
+    }
+
+    #[test]
+    fn placing_recipes() {
+        assert_decodes(
+            OLDEST..=V1_21_2 - 1,
+            Game,
+            Serverbound,
+            "place_recipe",
+            &[&[0xff, 3][..], b"a:b", &[1]].concat(),
+            &[
+                "container_id: -1 [1..2]",
+                "recipe: \"a:b\" [2..6]",
+                "use_max_items: true [6..7]",
+            ],
+        );
+        assert_decodes(
+            V1_21_2..=NEWEST,
+            Game,
+            Serverbound,
+            "place_recipe",
+            &[2, 9, 0],
+            &[
+                "container_id: 2 [1..2]",
+                "recipe: 9 [2..3]",
+                "use_max_items: false [3..4]",
+            ],
+        );
+        check(
+            OLDEST..=V1_21_2 - 1,
+            "place_ghost_recipe",
+            &[&[1, 3][..], b"a:b"].concat(),
+            &["container_id: 1 [1..2]", "recipe: \"a:b\" [2..6]"],
+        );
+        assert_partial(
+            V1_21_2..=NEWEST,
+            Game,
+            Clientbound,
+            "place_ghost_recipe",
+            &[1, 2],
+            &["container_id: 1 [1..2]", "display: #2 [2..3]"],
+            (3, "recipe display #2 isn't decoded yet"),
+        );
+        assert_decodes(
+            V1_21_2..=NEWEST,
+            Game,
+            Serverbound,
+            "recipe_book_seen_recipe",
+            &[9],
+            &["recipe: 9 [1..2]"],
+        );
+        assert_decodes(
+            OLDEST..=NEWEST,
+            Game,
+            Serverbound,
+            "recipe_book_change_settings",
+            &[2, 1, 0],
+            &[
+                "book_type: blast_furnace (2) [1..2]",
+                "is_open: true [2..3]",
+                "is_filtering: false [3..4]",
+            ],
         );
     }
 }

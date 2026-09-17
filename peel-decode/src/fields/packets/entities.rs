@@ -7,9 +7,10 @@ use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder, count};
 use super::components::ATTRIBUTE_OPERATIONS;
 use super::items::item_stack;
+use super::text::component;
 use super::{
-    HAND, V1_20_5, V1_21, V1_21_2, V1_21_5, V1_21_9, V26_3, game, nbt_tag, position_move_rotation,
-    relatives, rotation,
+    HAND, V1_20_5, V1_21, V1_21_2, V1_21_5, V1_21_9, V26_3, game, nbt, nbt_tag,
+    position_move_rotation, relatives, rotation, var_int,
 };
 
 pub static DECODERS: &[PacketDecoder] = &[
@@ -37,7 +38,7 @@ pub static DECODERS: &[PacketDecoder] = &[
         angles(d)
     }),
     game(Clientbound, "remove_entities", OLDEST..=NEWEST, |d| {
-        d.list("entity_ids", |d, name| d.var_int(name).map(drop))?;
+        d.list("entity_ids", var_int)?;
         Ok(())
     }),
     game(Clientbound, "set_entity_motion", OLDEST..=NEWEST, |d| {
@@ -117,7 +118,7 @@ pub static DECODERS: &[PacketDecoder] = &[
     }),
     game(Clientbound, "set_passengers", OLDEST..=NEWEST, |d| {
         d.var_int("vehicle_id")?;
-        d.list("passenger_ids", |d, name| d.var_int(name).map(drop))?;
+        d.list("passenger_ids", var_int)?;
         Ok(())
     }),
     game(Clientbound, "take_item_entity", OLDEST..=NEWEST, |d| {
@@ -196,6 +197,107 @@ pub static DECODERS: &[PacketDecoder] = &[
         d.raw_id("effect")?;
         Ok(())
     }),
+    game(
+        Clientbound,
+        "add_experience_orb",
+        OLDEST..=V1_21_5 - 1,
+        |d| {
+            d.var_int("entity_id")?;
+            d.vec3("position")?;
+            d.i16("value")?;
+            Ok(())
+        },
+    ),
+    game(
+        Clientbound,
+        "move_minecart_along_track",
+        V1_21_2..=NEWEST,
+        |d| {
+            d.var_int("entity_id")?;
+            d.list("lerp_steps", |d, name| {
+                d.group(name, |d| {
+                    d.vec3("position")?;
+                    d.vec3("movement")?;
+                    d.angle("y_rot")?;
+                    d.angle("x_rot")?;
+                    d.f32("weight")?;
+                    Ok(())
+                })
+            })?;
+            Ok(())
+        },
+    ),
+    game(
+        Clientbound,
+        "move_vehicle",
+        OLDEST..=NEWEST,
+        vehicle_position,
+    ),
+    game(Clientbound, "projectile_power", V1_20_5..=NEWEST, |d| {
+        d.var_int("entity_id")?;
+        if d.protocol() >= V1_21 {
+            d.f64("power")?;
+        } else {
+            d.vec3("power")?;
+        }
+        Ok(())
+    }),
+    game(Clientbound, "set_camera", OLDEST..=NEWEST, |d| {
+        d.var_int("camera_id")?;
+        Ok(())
+    }),
+    game(Clientbound, "player_look_at", OLDEST..=NEWEST, |d| {
+        let anchors = &["feet", "eyes"];
+        d.variant("from_anchor", Reader::var_int, anchors)?;
+        d.vec3("position")?;
+        d.optional("entity", |d, name| {
+            d.group(name, |d| {
+                d.var_int("entity_id")?;
+                d.variant("to_anchor", Reader::var_int, anchors)?;
+                Ok(())
+            })
+        })?;
+        Ok(())
+    }),
+    game(Clientbound, "player_rotation", V1_21_2..=NEWEST, |d| {
+        if d.protocol() < V1_21_9 {
+            return rotation(d);
+        }
+        d.f32("y_rot")?;
+        d.bool("relative_y_rot")?;
+        d.f32("x_rot")?;
+        d.bool("relative_x_rot")?;
+        Ok(())
+    }),
+    game(Clientbound, "player_combat_end", OLDEST..=NEWEST, |d| {
+        d.var_int("duration")?;
+        Ok(())
+    }),
+    game(Clientbound, "player_combat_enter", OLDEST..=NEWEST, |_| {
+        Ok(())
+    }),
+    game(Clientbound, "player_combat_kill", OLDEST..=NEWEST, |d| {
+        d.var_int("player_id")?;
+        component(d, "message")
+    }),
+    game(Clientbound, "cooldown", OLDEST..=NEWEST, |d| {
+        if d.protocol() >= V1_21_2 {
+            d.string("cooldown_group")?;
+        } else {
+            d.registry("item", ClientRegistry::Item)?;
+        }
+        d.var_int("duration")?;
+        Ok(())
+    }),
+    game(Clientbound, "open_book", OLDEST..=NEWEST, |d| {
+        d.variant("hand", Reader::var_int, HAND)?;
+        Ok(())
+    }),
+    game(Clientbound, "tag_query", OLDEST..=NEWEST, |d| {
+        d.var_int("transaction_id")?;
+        nbt::root(d, "tag")?;
+        Ok(())
+    }),
     game(Clientbound, "update_attributes", OLDEST..=NEWEST, |d| {
         d.var_int("entity_id")?;
         d.list("attributes", |d, name| d.group(name, attribute))?;
@@ -237,6 +339,13 @@ pub static DECODERS: &[PacketDecoder] = &[
 ];
 
 /// Velocity in 1/8000 blocks per tick, as shorts until 1.21.9 sent `LpVec3`.
+/// A vehicle's position and rotation, which the client echoes with
+/// `on_ground` from 1.21.4.
+pub fn vehicle_position(d: &mut Decoder) -> Result<()> {
+    d.vec3("position")?;
+    rotation(d)
+}
+
 /// `ClientboundUpdateAttributesPacket.AttributeSnapshot`. Attributes were
 /// named by key until 1.20.5, and modifiers by UUID until 1.21.
 fn attribute(d: &mut Decoder) -> Result<()> {
@@ -332,8 +441,8 @@ mod tests {
 
     use peel_trace::Phase::Game;
 
-    use super::super::super::testing::{assert_decodes, entry, f32s, f64s, protocols};
-    use super::super::V1_20_2;
+    use super::super::super::testing::{NO_FIELDS, assert_decodes, entry, f32s, f64s, protocols};
+    use super::super::{V1_20_2, V1_20_3};
     use super::*;
 
     fn check(range: RangeInclusive<i32>, name: &str, body: &[u8], expected: &[impl AsRef<str>]) {
@@ -830,5 +939,158 @@ mod tests {
                 ],
             );
         }
+    }
+
+    #[test]
+    fn orbs_minecarts_and_vehicles() {
+        check(
+            OLDEST..=V1_21_5 - 1,
+            "add_experience_orb",
+            &[&[7][..], &f64s(&[1.0, 2.0, 3.0]), &5i16.to_be_bytes()].concat(),
+            &[
+                "entity_id: 7 [1..2]",
+                "position: 1.0, 2.0, 3.0 [2..26]",
+                "value: 5 [26..28]",
+            ],
+        );
+        check(
+            V1_21_2..=NEWEST,
+            "move_minecart_along_track",
+            &[
+                &[7, 1][..],
+                &f64s(&[1.0, 2.0, 3.0, 0.0, 0.0, 0.0]),
+                &[64, 0],
+                &f32s(&[1.0]),
+            ]
+            .concat(),
+            &[
+                "entity_id: 7 [1..2]",
+                "lerp_steps: 1 item [2..57]",
+                "  0:  [3..57]",
+                "    position: 1.0, 2.0, 3.0 [3..27]",
+                "    movement: 0.0, 0.0, 0.0 [27..51]",
+                "    y_rot: 90.0° [51..52]",
+                "    x_rot: 0.0° [52..53]",
+                "    weight: 1.0 [53..57]",
+            ],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "move_vehicle",
+            &[&f64s(&[1.0, 2.0, 3.0])[..], &f32s(&[4.0, 5.0])].concat(),
+            &[
+                "position: 1.0, 2.0, 3.0 [1..25]",
+                "y_rot: 4.0 [25..29]",
+                "x_rot: 5.0 [29..33]",
+            ],
+        );
+        check(
+            V1_20_5..=V1_21 - 1,
+            "projectile_power",
+            &[&[7][..], &f64s(&[1.0, 2.0, 3.0])].concat(),
+            &["entity_id: 7 [1..2]", "power: 1.0, 2.0, 3.0 [2..26]"],
+        );
+        check(
+            V1_21..=NEWEST,
+            "projectile_power",
+            &[&[7][..], &f64s(&[0.5])].concat(),
+            &["entity_id: 7 [1..2]", "power: 0.5 [2..10]"],
+        );
+    }
+
+    #[test]
+    fn camera_and_rotation() {
+        check(
+            OLDEST..=NEWEST,
+            "set_camera",
+            &[3],
+            &["camera_id: 3 [1..2]"],
+        );
+        let position = f64s(&[1.0, 2.0, 3.0]);
+        check(
+            OLDEST..=NEWEST,
+            "player_look_at",
+            &[&[1][..], &position, &[1, 7, 0]].concat(),
+            &[
+                "from_anchor: eyes (1) [1..2]",
+                "position: 1.0, 2.0, 3.0 [2..26]",
+                "entity:  [26..29]",
+                "  entity_id: 7 [27..28]",
+                "  to_anchor: feet (0) [28..29]",
+            ],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "player_look_at",
+            &[&[0][..], &position, &[0]].concat(),
+            &[
+                "from_anchor: feet (0) [1..2]",
+                "position: 1.0, 2.0, 3.0 [2..26]",
+                "entity: absent [26..27]",
+            ],
+        );
+        check(
+            V1_21_2..=V1_21_9 - 1,
+            "player_rotation",
+            &f32s(&[90.0, 0.0]),
+            &["y_rot: 90.0 [1..5]", "x_rot: 0.0 [5..9]"],
+        );
+        check(
+            V1_21_9..=NEWEST,
+            "player_rotation",
+            &[&f32s(&[90.0])[..], &[1], &f32s(&[0.0]), &[0]].concat(),
+            &[
+                "y_rot: 90.0 [1..5]",
+                "relative_y_rot: true [5..6]",
+                "x_rot: 0.0 [6..10]",
+                "relative_x_rot: false [10..11]",
+            ],
+        );
+    }
+
+    #[test]
+    fn combat_cooldowns_books_and_queries() {
+        check(
+            OLDEST..=NEWEST,
+            "player_combat_end",
+            &[20],
+            &["duration: 20 [1..2]"],
+        );
+        check(OLDEST..=NEWEST, "player_combat_enter", &[], NO_FIELDS);
+        check(
+            V1_20_3..=NEWEST,
+            "player_combat_kill",
+            &[7, 8, 0, 2, b'h', b'i'],
+            &["player_id: 7 [1..2]", "message: \"hi\" [2..7]"],
+        );
+        for protocol in protocols(OLDEST..=V1_21_2 - 1) {
+            check(
+                protocol..=protocol,
+                "cooldown",
+                &[1, 20],
+                &[
+                    format!("item: {} [1..2]", entry(protocol, ClientRegistry::Item, 1)),
+                    "duration: 20 [2..3]".into(),
+                ],
+            );
+        }
+        check(
+            V1_21_2..=NEWEST,
+            "cooldown",
+            &[3, b'a', b':', b'b', 20],
+            &["cooldown_group: \"a:b\" [1..5]", "duration: 20 [5..6]"],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "open_book",
+            &[1],
+            &["hand: off_hand (1) [1..2]"],
+        );
+        check(
+            OLDEST..=NEWEST,
+            "tag_query",
+            &[3, 0],
+            &["transaction_id: 3 [1..2]", "tag: none [2..3]"],
+        );
     }
 }

@@ -136,7 +136,7 @@ pub static DECODERS: &[PacketDecoder] = &[
 
 /// A container id: a byte, signed in some packets, until 1.21.2 sent a
 /// `VarInt`.
-fn container_id(d: &mut Decoder, signed: bool) -> Result<()> {
+pub fn container_id(d: &mut Decoder, signed: bool) -> Result<()> {
     if d.protocol() >= V1_21_2 {
         d.var_int("container_id")?;
     } else if signed {

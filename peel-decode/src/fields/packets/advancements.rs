@@ -1,4 +1,4 @@
-//! `update_advancements`: the advancement tree and the player's progress.
+//! The advancement tree, the player's progress and statistics.
 
 use peel_trace::Direction::Clientbound;
 
@@ -8,11 +8,28 @@ use super::items::stack_or_template;
 use super::text::component;
 use super::{V1_20_2, V1_21_5, V26_3, game, string};
 
-pub static DECODERS: &[PacketDecoder] = &[game(
-    Clientbound,
-    "update_advancements",
-    OLDEST..=NEWEST,
-    |d| {
+pub static DECODERS: &[PacketDecoder] = &[
+    game(
+        Clientbound,
+        "select_advancements_tab",
+        OLDEST..=NEWEST,
+        |d| {
+            d.optional("tab", string)?;
+            Ok(())
+        },
+    ),
+    game(Clientbound, "award_stats", OLDEST..=NEWEST, |d| {
+        d.list("stats", |d, name| {
+            d.group(name, |d| {
+                d.raw_id("type")?;
+                d.raw_id("value")?;
+                d.var_int("amount")?;
+                Ok(())
+            })
+        })?;
+        Ok(())
+    }),
+    game(Clientbound, "update_advancements", OLDEST..=NEWEST, |d| {
         d.bool("reset")?;
         d.list("added", |d, name| d.group(name, advancement))?;
         d.list("removed", string)?;
@@ -33,8 +50,8 @@ pub static DECODERS: &[PacketDecoder] = &[game(
             d.bool("show_advancements")?;
         }
         Ok(())
-    },
-)];
+    }),
+];
 
 /// An id and an `Advancement`. 1.20.1 also listed the criteria names, and
 /// 26.3 moved the tab position out of the display to after it.
@@ -249,5 +266,35 @@ mod tests {
                 &lines,
             );
         }
+    }
+
+    #[test]
+    fn select_advancements_tab() {
+        assert_decodes(
+            OLDEST..=NEWEST,
+            Game,
+            Clientbound,
+            "select_advancements_tab",
+            &[1, 3, b'a', b':', b'b'],
+            &["tab: \"a:b\" [1..6]"],
+        );
+    }
+
+    #[test]
+    fn award_stats() {
+        assert_decodes(
+            OLDEST..=NEWEST,
+            Game,
+            Clientbound,
+            "award_stats",
+            &[1, 8, 3, 5],
+            &[
+                "stats: 1 item [1..5]",
+                "  0:  [2..5]",
+                "    type: #8 [2..3]",
+                "    value: #3 [3..4]",
+                "    amount: 5 [4..5]",
+            ],
+        );
     }
 }

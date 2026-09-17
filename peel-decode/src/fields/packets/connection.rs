@@ -5,8 +5,9 @@ use peel_trace::Phase;
 
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, NEWEST, OLDEST, PacketDecoder};
+use super::session::profile_properties;
 use super::text::json_component;
-use super::{GAME, V1_20_2, V1_20_5, V1_21, V1_21_2, V26_2, decoder};
+use super::{GAME, V1_20_2, V1_20_5, V1_21, V1_21_2, V26_2, decoder, uuid};
 
 const HANDSHAKE: &[Phase] = &[Phase::Handshake];
 const STATUS: &[Phase] = &[Phase::Status];
@@ -49,7 +50,7 @@ pub static DECODERS: &[PacketDecoder] = &[
         if d.protocol() >= V1_20_2 {
             d.uuid("profile_id")?;
         } else {
-            d.optional("profile_id", |d, name| d.uuid(name))?;
+            d.optional("profile_id", uuid)?;
         }
         Ok(())
     }),
@@ -90,6 +91,40 @@ pub static DECODERS: &[PacketDecoder] = &[
             Ok(())
         },
     ),
+    decoder(LOGIN, Clientbound, "hello", OLDEST..=NEWEST, |d| {
+        d.string("server_id")?;
+        d.byte_array("public_key")?;
+        d.byte_array("challenge")?;
+        if d.protocol() >= V1_20_5 {
+            d.bool("should_authenticate")?;
+        }
+        Ok(())
+    }),
+    decoder(LOGIN, Serverbound, "key", OLDEST..=NEWEST, |d| {
+        d.byte_array("key")?;
+        d.byte_array("encrypted_challenge")?;
+        Ok(())
+    }),
+    decoder(LOGIN, Clientbound, "custom_query", OLDEST..=NEWEST, |d| {
+        d.var_int("transaction_id")?;
+        d.string("channel")?;
+        d.rest("payload")?;
+        Ok(())
+    }),
+    decoder(
+        LOGIN,
+        Serverbound,
+        "custom_query",
+        OLDEST..=OLDEST,
+        query_answer,
+    ),
+    decoder(
+        LOGIN,
+        Serverbound,
+        "custom_query_answer",
+        V1_20_2..=NEWEST,
+        query_answer,
+    ),
     decoder(
         LOGIN,
         Serverbound,
@@ -99,6 +134,14 @@ pub static DECODERS: &[PacketDecoder] = &[
     ),
 ];
 
+/// A login query's answer: its transaction and an optional payload filling
+/// the rest of the frame.
+fn query_answer(d: &mut Decoder) -> Result<()> {
+    d.var_int("transaction_id")?;
+    d.optional("payload", |d, name| d.rest(name))?;
+    Ok(())
+}
+
 fn time(d: &mut Decoder) -> Result<()> {
     d.i64("time")?;
     Ok(())
@@ -106,18 +149,10 @@ fn time(d: &mut Decoder) -> Result<()> {
 
 /// `ByteBufCodecs.GAME_PROFILE`, and `FriendlyByteBuf.readGameProfile` before
 /// it, which has the same bytes with looser limits.
-fn game_profile(d: &mut Decoder) -> Result<()> {
+pub fn game_profile(d: &mut Decoder) -> Result<()> {
     d.uuid("uuid")?;
     d.string("name")?;
-    d.list("properties", |d, name| {
-        d.group(name, |d| {
-            d.string("name")?;
-            d.string("value")?;
-            d.optional("signature", |d, name| d.string(name))?;
-            Ok(())
-        })
-    })?;
-    Ok(())
+    profile_properties(d)
 }
 
 #[cfg(test)]
@@ -332,5 +367,67 @@ mod tests {
                 &expected,
             );
         }
+    }
+
+    #[test]
+    fn encryption_and_queries() {
+        let hello = [1, b's', 2, 9, 9, 1, 7];
+        let hello_lines = [
+            "server_id: \"s\" [1..3]",
+            "public_key: 2 bytes [3..6]",
+            "challenge: 1 byte [6..8]",
+        ];
+        check(
+            Phase::Login,
+            Clientbound,
+            OLDEST..=V1_20_5 - 1,
+            "hello",
+            &hello,
+            &hello_lines,
+        );
+        check(
+            Phase::Login,
+            Clientbound,
+            V1_20_5..=NEWEST,
+            "hello",
+            &[&hello[..], &[1]].concat(),
+            &[&hello_lines[..], &["should_authenticate: true [8..9]"]].concat(),
+        );
+        check(
+            Phase::Login,
+            Serverbound,
+            OLDEST..=NEWEST,
+            "key",
+            &[2, 9, 9, 1, 7],
+            &["key: 2 bytes [1..4]", "encrypted_challenge: 1 byte [4..6]"],
+        );
+        check(
+            Phase::Login,
+            Clientbound,
+            OLDEST..=NEWEST,
+            "custom_query",
+            &[3, 3, b'a', b':', b'b', 9, 9],
+            &[
+                "transaction_id: 3 [1..2]",
+                "channel: \"a:b\" [2..6]",
+                "payload: 2 bytes [6..8]",
+            ],
+        );
+        check(
+            Phase::Login,
+            Serverbound,
+            OLDEST..=OLDEST,
+            "custom_query",
+            &[3, 1, 9],
+            &["transaction_id: 3 [1..2]", "payload: 1 byte [2..4]"],
+        );
+        check(
+            Phase::Login,
+            Serverbound,
+            V1_20_2..=NEWEST,
+            "custom_query_answer",
+            &[3, 0],
+            &["transaction_id: 3 [1..2]", "payload: absent [2..3]"],
+        );
     }
 }

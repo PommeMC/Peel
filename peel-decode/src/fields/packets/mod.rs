@@ -2,6 +2,7 @@
 //! boundaries come from diffing each codec across the reference versions.
 
 mod advancements;
+mod blocks;
 mod chat;
 mod chunk;
 mod common;
@@ -11,8 +12,10 @@ mod entities;
 mod entity_data;
 mod items;
 mod nbt;
+mod particles;
 mod player;
 mod recipes;
+mod scoreboard;
 mod session;
 mod text;
 mod world;
@@ -31,7 +34,9 @@ pub static DECODERS: &[&[PacketDecoder]] = &[
     player::DECODERS,
     session::DECODERS,
     recipes::DECODERS,
+    scoreboard::DECODERS,
     advancements::DECODERS,
+    blocks::DECODERS,
     entities::DECODERS,
     entity_data::DECODERS,
     world::DECODERS,
@@ -197,24 +202,75 @@ pub fn tag_key(d: &mut Decoder, name: impl Into<Name>) -> Result<()> {
     Ok(())
 }
 
-/// `SoundEvent.STREAM_CODEC`: a sound event holder whose inline form is a
-/// location and an optional fixed range.
+/// `SoundEvent.STREAM_CODEC`: a sound event holder.
 pub fn sound_event(d: &mut Decoder, name: impl Into<Name>) -> Result<()> {
-    holder(d, name, Some(ClientRegistry::SoundEvent), |d| {
-        d.string("location")?;
-        d.optional("fixed_range", |d, name| d.f32(name))?;
-        Ok(())
-    })
+    holder(d, name, Some(ClientRegistry::SoundEvent), inline_sound)
 }
 
-/// A string, for `list` and `optional`.
+/// A `SoundEvent` itself: a location and an optional fixed range.
+pub fn inline_sound(d: &mut Decoder) -> Result<()> {
+    d.string("location")?;
+    d.optional("fixed_range", |d, name| d.f32(name))?;
+    Ok(())
+}
+
+/// Three signed bytes, such as a block offset.
+pub fn byte_vec3(d: &mut Decoder, name: Name) -> Result<()> {
+    d.read(
+        name,
+        |r| Ok([r.i8()?, r.i8()?, r.i8()?]),
+        |[x, y, z]| format!("{x}, {y}, {z}"),
+    )
+    .map(drop)
+}
+
+/// `Vec3i`: three `VarInt`s.
+pub fn vec3i(d: &mut Decoder, name: Name) -> Result<()> {
+    d.read(
+        name,
+        |r| Ok([r.var_int()?, r.var_int()?, r.var_int()?]),
+        |[x, y, z]| format!("{x}, {y}, {z}"),
+    )
+    .map(drop)
+}
+
+// Readers for `list` and `optional`, which pass each item's name.
+
 pub fn string(d: &mut Decoder, name: Name) -> Result<()> {
     d.string(name).map(drop)
 }
 
-/// One network NBT tag, for `list` and `optional`.
+pub fn var_int(d: &mut Decoder, name: Name) -> Result<()> {
+    d.var_int(name).map(drop)
+}
+
+pub fn uuid(d: &mut Decoder, name: Name) -> Result<()> {
+    d.uuid(name).map(drop)
+}
+
+pub fn raw_id(d: &mut Decoder, name: Name) -> Result<()> {
+    d.raw_id(name).map(drop)
+}
+
 pub fn nbt_tag(d: &mut Decoder, name: Name) -> Result<()> {
     nbt::root(d, name).map(drop)
+}
+
+/// `ByteBufCodecs.OPTIONAL_VAR_INT`, shown as the value or `none`.
+pub fn optional_var_int(d: &mut Decoder, name: impl Into<Name>) -> Result<()> {
+    d.read(name, Reader::optional_var_int, |value| {
+        value.map_or_else(|| "none".into(), |value| value.to_string())
+    })?;
+    Ok(())
+}
+
+/// An enum sent as a byte until protocol `since` sent a `VarInt`.
+pub fn byte_enum(d: &mut Decoder, name: &'static str, names: &[&str], since: i32) -> Result<i32> {
+    if d.protocol() >= since {
+        d.variant(name, Reader::var_int, names)
+    } else {
+        d.variant(name, Reader::u8, names).map(i32::from)
+    }
 }
 
 /// An enum sent by `VarInt` id.
@@ -247,6 +303,8 @@ pub fn global_pos(d: &mut Decoder, name: Name) -> Result<()> {
 
 /// `InteractionHand`.
 pub const HAND: &[&str] = &["main_hand", "off_hand"];
+/// `Difficulty`.
+pub const DIFFICULTIES: &[&str] = &["peaceful", "easy", "normal", "hard"];
 /// `Direction`, by 3D data value.
 pub const DIRECTION: &[&str] = &["down", "up", "north", "south", "west", "east"];
 
@@ -287,6 +345,37 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn every_packet_has_a_decoder() {
+        let mut missing = Vec::new();
+        for protocol in protocols(OLDEST..=NEWEST) {
+            let table = PacketTable::for_protocol(protocol).unwrap();
+            for phase in [
+                Phase::Handshake,
+                Phase::Status,
+                Phase::Login,
+                Phase::Configuration,
+                Phase::Game,
+            ] {
+                for direction in [Direction::Serverbound, Direction::Clientbound] {
+                    for name in
+                        (0..).map_while(|id| names::packet_name(table, phase, direction, id))
+                    {
+                        if !all().any(|d| {
+                            d.phases.contains(&phase)
+                                && d.direction == direction
+                                && d.name == name
+                                && d.protocols.contains(&protocol)
+                        }) {
+                            missing.push(format!("{protocol} {phase:?} {direction:?} {name}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "no decoder for {missing:#?}");
     }
 
     #[test]

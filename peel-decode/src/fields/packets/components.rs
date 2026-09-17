@@ -5,12 +5,13 @@ use pomme_protocol::ClientRegistry;
 
 use super::super::reader::{Reader, Result};
 use super::super::{Decoder, Name};
+use super::connection::game_profile;
 use super::items::{item_stack, item_template, stack_or_template};
 use super::session::profile_properties;
 use super::text::component;
 use super::{
     V1_21, V1_21_2, V1_21_4, V1_21_5, V1_21_6, V1_21_9, V1_21_11, V26_1, V26_3, global_pos, holder,
-    holder_set, nbt_tag, registry_name, sound_event, string, tag_key, variant,
+    holder_set, nbt_tag, raw_id, registry_name, sound_event, string, tag_key, uuid, variant,
 };
 
 /// `TypedDataComponent`: a component type id, then its value, recorded under
@@ -177,7 +178,7 @@ fn value(d: &mut Decoder, kind: &str, name: Name) -> Result<()> {
             Ok(())
         }),
         "chicken/variant" | "zombie_nautilus/variant" | "damage_type" if protocol < V26_1 => {
-            either_holder(d, name, |d, name| d.raw_id(name).map(drop))
+            either_holder(d, name, raw_id)
         }
         "villager/variant"
         | "wolf/variant"
@@ -209,7 +210,7 @@ fn value(d: &mut Decoder, kind: &str, name: Name) -> Result<()> {
         "map_post_processing" => variant(d, name, &["lock", "scale"]),
         "charged_projectiles" | "bundle_contents" => d.list(name, stack_or_template).map(drop),
         "potion_contents" => d.group(name, |d| {
-            d.optional("potion", |d, name| d.raw_id(name))?;
+            d.optional("potion", raw_id)?;
             d.optional("custom_color", rgb)?;
             d.list("custom_effects", mob_effect_instance)?;
             if d.protocol() >= V1_21_2 {
@@ -415,7 +416,7 @@ pub fn rgb(d: &mut Decoder, name: Name) -> Result<()> {
         .map(drop)
 }
 
-fn string_entry(d: &mut Decoder, name: Name) -> Result<()> {
+pub fn string_entry(d: &mut Decoder, name: Name) -> Result<()> {
     d.read(
         name,
         |r| Ok((r.string()?, r.string()?)),
@@ -929,11 +930,7 @@ pub fn profile(d: &mut Decoder) -> Result<()> {
     }
     d.prefixed(Reader::bool, |d, full| {
         if full {
-            d.group("game_profile", |d| {
-                d.uuid("id")?;
-                d.string("name")?;
-                profile_properties(d)
-            })
+            d.group("game_profile", game_profile)
         } else {
             d.group("partial_profile", partial_profile)
         }
@@ -953,7 +950,7 @@ pub fn profile(d: &mut Decoder) -> Result<()> {
 
 fn partial_profile(d: &mut Decoder) -> Result<()> {
     d.optional("name", string)?;
-    d.optional("id", |d, name| d.uuid(name))?;
+    d.optional("id", uuid)?;
     profile_properties(d)
 }
 

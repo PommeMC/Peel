@@ -10,7 +10,7 @@ use super::chat::chat_session;
 use super::text::optional_component;
 use super::{
     CONFIGURATION, GAME, V1_20_2, V1_20_3, V1_20_5, V1_21_2, V1_21_4, V1_21_6, V26_2, V26_3,
-    decoder, game, global_pos, in_configuration, in_game, nbt, nbt_tag, string,
+    decoder, game, global_pos, in_configuration, in_game, nbt, nbt_tag, string, uuid, var_int,
 };
 
 pub static DECODERS: &[PacketDecoder] = &[
@@ -117,7 +117,7 @@ pub static DECODERS: &[PacketDecoder] = &[
         Ok(())
     }),
     game(Clientbound, "player_info_remove", OLDEST..=NEWEST, |d| {
-        d.list("profile_ids", |d, name| d.uuid(name).map(drop))?;
+        d.list("profile_ids", uuid)?;
         Ok(())
     }),
     game(Clientbound, "commands", OLDEST..=NEWEST, |d| {
@@ -195,7 +195,7 @@ fn command_node(d: &mut Decoder) -> Result<()> {
     ];
     let known = if d.protocol() >= V1_21_6 { 6 } else { 5 };
     let flags = d.flags("flags", Reader::u8, &names[..known])?;
-    d.list("children", |d, name| d.var_int(name).map(drop))?;
+    d.list("children", var_int)?;
     if flags & 0x08 != 0 {
         d.var_int("redirect")?;
     }
@@ -211,7 +211,7 @@ fn command_node(d: &mut Decoder) -> Result<()> {
     }
 }
 
-const GAME_TYPES: &[&str] = &["survival", "creative", "adventure", "spectator"];
+pub const GAME_TYPES: &[&str] = &["survival", "creative", "adventure", "spectator"];
 
 /// `GameType` and the previous one: bytes with -1 for none until 26.3 sent a
 /// `VarInt` and an optional `VarInt`.
@@ -289,7 +289,7 @@ fn update_tags(d: &mut Decoder) -> Result<()> {
             d.list("tags", |d, name| {
                 d.group(name, |d| {
                     d.string("name")?;
-                    d.list("ids", |d, name| d.var_int(name).map(drop))?;
+                    d.list("ids", var_int)?;
                     Ok(())
                 })
             })?;

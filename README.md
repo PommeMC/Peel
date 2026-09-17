@@ -27,7 +27,7 @@ and is built on that repo's `pomme-protocol` crate.
 - **Every version from 1.20 through 26.3**: packet names, phases and compression are followed per version from tables generated from the decompiled game, including the configuration phase (1.20.2+)
 - **Tick-accurate timelines**: from 1.21.2 (protocol 768) packets are grouped by the client's own tick marker, `client_tick_end`; older versions are grouped by timestamp and clearly labelled approximate
 - **Small, shareable traces**: raw packets in a compressed file; chunk data compresses about 7x. Names and fields are computed when a trace is read, so improvements to Peel apply to old traces too
-- **Packet fields**: handshake, login, configuration, player, entity, world, chunk, chat, inventory, recipe and advancement packets decode into named fields, including entity data and item components, each ported from the vanilla codec for every version it changed in. Chunk sections show their palettes rather than every block. A value that needs a registry Peel doesn't have yet, such as a command argument parser or a recipe display, ends decoding there, and the rest of that packet shows as raw bytes, like packets with no decoder
+- **Packet fields**: every packet in every supported version decodes into named fields, including chunk sections, entity data, particles and item components, each ported from the vanilla codec for every version it changed in. Chunk sections show their palettes rather than every block. A value that needs a registry Peel doesn't have yet, such as a command argument parser or a recipe display, ends decoding there, and the rest of that packet shows as raw bytes
 - **Web viewer**: a filterable tick timeline with a byte-level view of every packet, opened with `peel view`. Hovering a field highlights its bytes. Traces are decoded in your browser by the same Rust code as `peel dump`, and never uploaded
 - **Nothing to install for viewing**: the viewer is also hosted at [peel.pomme.rs](https://peel.pomme.rs), for opening or comparing a shared trace in any browser
 - **Diff against vanilla**: `peel diff` and the viewer line a trace up with a vanilla reference tick by tick and report packets that are missing, extra or out of order, and fields that differ, skipping values that change between any two sessions
@@ -36,7 +36,7 @@ and is built on that repo's `pomme-protocol` crate.
 Planned:
 
 - **Reference traces**: vanilla captures of common scenarios to diff against
-- **More field decoders**: the remaining packets, and the values that wait on registries Peel doesn't have yet
+- **The last few values**: the ones that wait on registries Peel doesn't have yet
 
 ## Usage
 
