@@ -365,10 +365,19 @@ fn lone(kind: RowKind, reference: Option<usize>, trace: Option<usize>) -> Row {
     }
 }
 
+/// How big the longest-common-subsequence table may get. A trace that never
+/// sends the tick marker puts every packet in one group, and the table is the
+/// product of both sides, so past this the alignment walks the two sides in
+/// step instead.
+const MAX_ALIGN_CELLS: usize = 4 << 20;
+
 /// Lines two packet sequences up along their longest common subsequence,
 /// then pairs leftovers of the same packet as moved.
 fn align<'a>(reference: &[&'a Packet], trace: &[&'a Packet]) -> Vec<Step<'a>> {
     let (n, m) = (reference.len(), trace.len());
+    if (n + 1).saturating_mul(m + 1) > MAX_ALIGN_CELLS {
+        return in_step(reference, trace);
+    }
     let width = m + 1;
     let mut common = vec![0u32; (n + 1) * width];
     for i in (0..n).rev() {
@@ -401,13 +410,19 @@ fn align<'a>(reference: &[&'a Packet], trace: &[&'a Packet]) -> Vec<Step<'a>> {
         }
     }
 
+    let mut extras: HashMap<PacketKey, Vec<usize>> = HashMap::new();
+    for (i, step) in steps.iter().enumerate() {
+        if let Some(Step::Extra(packet)) = step {
+            extras.entry(key(packet)).or_default().push(i);
+        }
+    }
     for i in 0..steps.len() {
         let Some(Step::Missing(reference)) = steps[i] else {
             continue;
         };
-        let extra = steps
-            .iter()
-            .position(|s| matches!(s, Some(Step::Extra(t)) if key(t) == key(reference)));
+        let extra = extras
+            .get_mut(&key(reference))
+            .and_then(|positions| positions.pop());
         if let Some(Some(Step::Extra(trace))) = extra.map(|j| steps[j].take()) {
             steps[i] = Some(Step::Pair {
                 reference,
@@ -417,6 +432,27 @@ fn align<'a>(reference: &[&'a Packet], trace: &[&'a Packet]) -> Vec<Step<'a>> {
         }
     }
     steps.into_iter().flatten().collect()
+}
+
+/// Walks both sides together, pairing packets that line up and reporting the
+/// rest as missing or extra. Used when the groups are too big to align
+/// properly.
+fn in_step<'a>(reference: &[&'a Packet], trace: &[&'a Packet]) -> Vec<Step<'a>> {
+    let mut steps = Vec::with_capacity(reference.len().max(trace.len()));
+    for pair in 0..reference.len().max(trace.len()) {
+        match (reference.get(pair), trace.get(pair)) {
+            (Some(r), Some(t)) if key(r) == key(t) => steps.push(Step::Pair {
+                reference: r,
+                trace: t,
+                moved: false,
+            }),
+            (r, t) => {
+                steps.extend(r.copied().map(Step::Missing));
+                steps.extend(t.copied().map(Step::Extra));
+            }
+        }
+    }
+    steps
 }
 
 /// Pairs a packet missing from one group with the same packet appearing
@@ -507,22 +543,23 @@ fn compare_fields(pair: [&Packet; 2], sides: &[Side; 2], ignores: &Ignores) -> V
             &sides[side].loaded.records[pair[side].index],
         ))
     });
-    let lookup = |leaves: &[(String, String)], path: &str| {
+    let [reference_values, trace_values] = [&reference, &trace].map(|leaves| {
         leaves
             .iter()
-            .find(|(p, _)| p == path)
-            .map(|(_, value)| value.clone())
-    };
+            .map(|(path, value)| (path.as_str(), value.as_str()))
+            .collect::<HashMap<_, _>>()
+    });
+    let lookup = |values: &HashMap<&str, &str>, path: &str| values.get(path).map(|v| v.to_string());
     let trace_only = trace
         .iter()
-        .filter(|(path, _)| lookup(&reference, path).is_none());
+        .filter(|(path, _)| !reference_values.contains_key(path.as_str()));
     reference
         .iter()
         .chain(trace_only)
         .map(|(path, _)| path)
         .filter(|path| !ignores.field(pair[0].name, path))
         .filter_map(|path| {
-            let (r, t) = (lookup(&reference, path), lookup(&trace, path));
+            let (r, t) = (lookup(&reference_values, path), lookup(&trace_values, path));
             (r != t).then(|| FieldDiff {
                 path: path.clone(),
                 reference: r,
@@ -893,6 +930,20 @@ mod tests {
                 (FindingKind::Missing, "player_loaded", None, 1),
                 (FindingKind::Extra, "player_loaded", None, 1),
             ]
+        );
+    }
+
+    /// A trace with no tick markers puts every packet in one group, where
+    /// the alignment table would be the product of both sides.
+    #[test]
+    fn huge_groups_align_in_step_instead_of_a_table() {
+        let packets: Vec<Spec> = (0..3_000).map(|i| input(i as u8)).collect();
+        let mut trace = packets.clone();
+        trace.push(game("player_loaded", &[]));
+        let diff = run(&packets, &trace, Options::default());
+        assert_eq!(
+            summary(&diff),
+            [(FindingKind::Extra, "player_loaded", None, 1)]
         );
     }
 

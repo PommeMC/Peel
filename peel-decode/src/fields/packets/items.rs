@@ -314,7 +314,10 @@ mod tests {
     use peel_trace::Direction;
     use peel_trace::Phase::Game;
 
-    use super::super::super::testing::{assert_decodes, entry, f32s, protocols, registry_id};
+    use super::super::super::Decoded;
+    use super::super::super::testing::{
+        assert_decodes, decode, entry, f32s, protocols, registry_id,
+    };
     use super::*;
 
     fn check(
@@ -679,5 +682,30 @@ mod tests {
                 &lines,
             );
         }
+    }
+
+    /// A trace from a stranger can nest a stack in a component in a stack
+    /// forever; decoding must stop rather than run out of stack.
+    #[test]
+    fn deeply_nested_components_stop_decoding() {
+        let stone = registry_id(NEWEST, ClientRegistry::Item, "stone");
+        let bundle = registry_id(NEWEST, ClientRegistry::DataComponentType, "bundle_contents");
+        let mut body = vec![0, 0, 0, 0];
+        for _ in 0..10_000 {
+            // One stack: count, item, one added component, none removed, then
+            // its one-item list, whose item is the next stack.
+            body.extend([1, stone, 1, 0, bundle, 1]);
+        }
+        let decoded = decode(
+            NEWEST,
+            Game,
+            Direction::Clientbound,
+            "container_set_slot",
+            &body,
+        );
+        assert!(
+            matches!(&decoded, Decoded::Failed { reason, .. } if reason.contains("nest deeper")),
+            "{decoded:?}"
+        );
     }
 }

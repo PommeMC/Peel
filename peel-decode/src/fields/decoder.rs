@@ -33,11 +33,18 @@ impl Field {
     }
 }
 
+/// How deeply fields may nest. Traces come from strangers, and item stacks,
+/// components and NBT nest into each other, so a frame could otherwise
+/// recurse until the stack runs out. Vanilla's own NBT limit is 512; this is
+/// lower because it also bounds Peel's stack, and no real packet comes close.
+const MAX_DEPTH: usize = 128;
+
 /// Reads a packet's fields in codec order, recording each one.
 pub struct Decoder<'a> {
     reader: Reader<'a>,
     protocol: i32,
     fields: Vec<Field>,
+    depth: usize,
 }
 
 impl<'a> Decoder<'a> {
@@ -46,6 +53,7 @@ impl<'a> Decoder<'a> {
             reader,
             protocol,
             fields: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -87,9 +95,16 @@ impl<'a> Decoder<'a> {
         name: impl Into<Name>,
         decode: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
+        if self.depth == MAX_DEPTH {
+            return Err(self
+                .reader
+                .error(format!("fields nest deeper than {MAX_DEPTH}")));
+        }
         let start = self.reader.pos();
         let outer = std::mem::take(&mut self.fields);
+        self.depth += 1;
         let result = decode(self);
+        self.depth -= 1;
         let children = std::mem::replace(&mut self.fields, outer);
         self.fields.push(Field {
             name: name.into(),
@@ -294,7 +309,7 @@ impl<'a> Decoder<'a> {
             name,
             |r| {
                 let len = r.count()?;
-                r.bytes(len * 8, "a long array")?;
+                r.sized(len, 8, "a long array")?;
                 Ok(len)
             },
             |&len| count(len, "long"),

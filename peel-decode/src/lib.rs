@@ -26,15 +26,27 @@ pub struct Loaded {
     pub error: Option<peel_trace::Error>,
 }
 
+/// How many bytes of records `load` reads before it stops. A trace is a file
+/// from someone else, and its records decompress without a limit of their own.
+const MAX_TRACE_BYTES: usize = 256 << 20;
+
 pub fn load(trace: impl Read) -> peel_trace::Result<Loaded> {
     let mut reader = TraceReader::new(trace)?;
     let format_version = reader.format_version();
     let header = reader.header().clone();
     let mut records = Vec::new();
     let mut error = None;
+    let mut bytes = 0;
     for record in &mut reader {
         match record {
-            Ok(record) => records.push(record),
+            Ok(record) => {
+                bytes += record.frame.len();
+                records.push(record);
+                if bytes > MAX_TRACE_BYTES {
+                    error = Some(peel_trace::Error::TooLarge("more records than Peel reads"));
+                    break;
+                }
+            }
             Err(err) => error = Some(err),
         }
     }

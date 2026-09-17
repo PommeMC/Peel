@@ -33,6 +33,11 @@ const MAGIC: &[u8; 4] = b"PEEL";
 /// version.
 pub const FORMAT_VERSION: u16 = 2;
 
+/// The longest record a reader accepts, `CompressionDecoder`'s maximum
+/// uncompressed packet length. Traces are shared files, so a record that
+/// claims more than a packet can hold is refused rather than allocated.
+pub const MAX_RECORD_LENGTH: u64 = 0x80_0000;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
@@ -85,6 +90,8 @@ pub enum Error {
     /// killed. Records before it are intact.
     Truncated,
     Malformed(&'static str),
+    /// A record, or the whole trace, is bigger than the reader accepts.
+    TooLarge(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -101,6 +108,7 @@ impl fmt::Display for Error {
             ),
             Error::Truncated => f.write_str("trace ends partway through a record"),
             Error::Malformed(what) => write!(f, "malformed trace: {what}"),
+            Error::TooLarge(what) => write!(f, "trace is too large to read: {what}"),
         }
     }
 }
@@ -154,6 +162,9 @@ mod tests {
     use std::cell::RefCell;
     use std::io::Write;
     use std::rc::Rc;
+
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
 
     use super::*;
 
@@ -238,6 +249,23 @@ mod tests {
         assert_eq!(reader.header(), &header());
         let read: Vec<Record> = reader.collect::<Result<_>>().unwrap();
         assert_eq!(read, records());
+    }
+
+    #[test]
+    fn a_record_longer_than_a_packet_is_refused() {
+        let header = header();
+        let mut trace = Vec::from(MAGIC);
+        trace.extend(FORMAT_VERSION.to_le_bytes());
+        trace.extend(header.started_at_unix_ms.to_le_bytes());
+        varint::write(&mut trace, header.recorder.len() as u64);
+        trace.extend(header.recorder.as_bytes());
+        let mut length = Vec::new();
+        varint::write(&mut length, MAX_RECORD_LENGTH + 1);
+        let mut stream = ZlibEncoder::new(Vec::new(), Compression::default());
+        stream.write_all(&length).unwrap();
+        trace.extend(stream.finish().unwrap());
+        let mut reader = TraceReader::new(&trace[..]).unwrap();
+        assert!(matches!(reader.next(), Some(Err(Error::TooLarge(_)))));
     }
 
     #[test]

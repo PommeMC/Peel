@@ -133,8 +133,11 @@ fn recipe(d: &mut Decoder, serializer: &str) -> Result<()> {
                 crafting_category(d)?;
                 size
             };
+            let cells = width
+                .checked_mul(height)
+                .ok_or_else(|| d.reader().error("the recipe is larger than any frame"))?;
             d.group("ingredients", |d| {
-                for index in 0..width * height {
+                for index in 0..cells {
                     ingredient(d, index.to_string().into())?;
                 }
                 Ok(())

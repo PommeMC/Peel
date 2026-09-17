@@ -205,7 +205,7 @@ fn palette(d: &mut Decoder, strategy: &Strategy) -> Result<()> {
     };
     d.read(
         "data",
-        |r| r.bytes(longs * 8, "palette data"),
+        |r| r.sized(longs, 8, "palette data"),
         |b| count(b.len() / 8, "long"),
     )?;
     Ok(())
@@ -235,7 +235,7 @@ fn section_mask(d: &mut Decoder, name: &'static str) -> Result<()> {
         name,
         |r| {
             let len = r.count()?;
-            r.bytes(len * width / 8, "a bit set")
+            r.sized(len, width / 8, "a bit set")
         },
         |bytes| {
             let words: Vec<u64> = bytes

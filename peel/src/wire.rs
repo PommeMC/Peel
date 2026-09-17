@@ -10,8 +10,9 @@ use pomme_protocol::wire::read_varint;
 
 /// `Varint21FrameDecoder`: the frame length prefix is at most 3 bytes.
 const MAX_LENGTH_PREFIX: usize = 3;
-/// `CompressionDecoder.MAXIMUM_UNCOMPRESSED_LENGTH`.
-const MAX_UNCOMPRESSED_LENGTH: u32 = 0x80_0000;
+/// `CompressionDecoder.MAXIMUM_UNCOMPRESSED_LENGTH`, which is also the
+/// longest record a trace may hold.
+const MAX_UNCOMPRESSED_LENGTH: u32 = peel_trace::MAX_RECORD_LENGTH as u32;
 
 /// Splits a byte stream into frames the way `Varint21FrameDecoder` does,
 /// however the stream was cut into reads.

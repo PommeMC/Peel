@@ -3,7 +3,10 @@ use std::io::{self, Read};
 
 use flate2::read::ZlibDecoder;
 
-use crate::{Direction, Error, FORMAT_VERSION, Header, MAGIC, Phase, Record, Result, varint};
+use crate::{
+    Direction, Error, FORMAT_VERSION, Header, MAGIC, MAX_RECORD_LENGTH, Phase, Record, Result,
+    varint,
+};
 
 /// Reads a trace of any format version up to [`FORMAT_VERSION`], yielding its
 /// records in order. Iteration stops after the first error.
@@ -71,6 +74,9 @@ impl<R: Read> TraceReader<R> {
         let Some(len) = varint::read_stream(&mut self.records)? else {
             return Ok(None);
         };
+        if len > MAX_RECORD_LENGTH {
+            return Err(Error::TooLarge("a record longer than a packet can be"));
+        }
         read_body(&read_bytes(&mut self.records, len)?).map(Some)
     }
 }

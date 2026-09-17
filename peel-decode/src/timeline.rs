@@ -69,7 +69,7 @@ impl fmt::Display for GroupKey {
             Self::Window(n) => write!(
                 f,
                 "window +{:.3}s (approximate)",
-                (n * WINDOW_US as i64) as f64 / 1e6
+                n.saturating_mul(WINDOW_US as i64) as f64 / 1e6
             ),
         }
     }

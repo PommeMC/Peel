@@ -85,9 +85,19 @@ impl<'a> Reader<'a> {
         Ok(bytes)
     }
 
+    /// `len` items of `width` bytes each, refusing a length whose size
+    /// doesn't fit rather than wrapping. `usize` is 32-bit in the viewer's
+    /// WebAssembly build, where a wrapped length would read the wrong bytes.
+    pub fn sized(&mut self, len: usize, width: usize, what: &str) -> Result<&'a [u8]> {
+        let size = len
+            .checked_mul(width)
+            .ok_or_else(|| self.error(format!("{what} is longer than any frame")))?;
+        self.bytes(size, what)
+    }
+
     /// Up to `len` of the bytes ahead, without reading them.
     pub fn upcoming(&self, len: usize) -> &'a [u8] {
-        &self.bytes[self.pos..(self.pos + len).min(self.bytes.len())]
+        &self.bytes[self.pos..self.pos.saturating_add(len).min(self.bytes.len())]
     }
 
     pub fn rest(&mut self) -> &'a [u8] {

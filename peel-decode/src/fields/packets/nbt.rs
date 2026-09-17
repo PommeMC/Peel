@@ -14,9 +14,6 @@ pub enum Value {
     Other,
 }
 
-/// `NbtAccounter`'s depth limit.
-const MAX_DEPTH: usize = 512;
-
 /// `FriendlyByteBuf.readNbt`: one tag, or `End` for none.
 pub fn root(d: &mut Decoder, name: impl Into<Name>) -> Result<Value> {
     let name = name.into();
@@ -28,14 +25,13 @@ pub fn root(d: &mut Decoder, name: impl Into<Name>) -> Result<Value> {
         if d.protocol() < V1_20_2 {
             string(d.reader())?;
         }
-        tag(d, name, kind, 0)
+        tag(d, name, kind)
     })
 }
 
-fn tag(d: &mut Decoder, name: Name, kind: u8, depth: usize) -> Result<Value> {
-    if depth > MAX_DEPTH {
-        return Err(d.reader().error("NBT nests deeper than 512"));
-    }
+/// Vanilla stops at `NbtAccounter`'s 512 levels; `Decoder::group` stops
+/// sooner, and covers the packet nesting around the tag as well.
+fn tag(d: &mut Decoder, name: Name, kind: u8) -> Result<Value> {
     match kind {
         1 => d.i8(name).map(|_| Value::Other),
         2 => d.i16(name).map(|_| Value::Other),
@@ -52,7 +48,7 @@ fn tag(d: &mut Decoder, name: Name, kind: u8, depth: usize) -> Result<Value> {
                 let kind = d.reader().u8()?;
                 let len = length(d.reader())?;
                 (0..len)
-                    .map(|i| tag(d, i.to_string().into(), kind, depth + 1))
+                    .map(|i| tag(d, i.to_string().into(), kind))
                     .collect::<Result<Vec<_>>>()
             })?;
             d.show_last(count(items.len(), "item"));
@@ -67,7 +63,7 @@ fn tag(d: &mut Decoder, name: Name, kind: u8, depth: usize) -> Result<Value> {
                         return Ok(entries);
                     }
                     let key = string(d.reader())?;
-                    let value = tag(d, key.clone().into(), kind, depth + 1)?;
+                    let value = tag(d, key.clone().into(), kind)?;
                     entries.push((key, value));
                 }
             })?;
@@ -87,7 +83,7 @@ fn array(d: &mut Decoder, name: Name, width: usize, noun: &str) -> Result<Value>
         name,
         |r| {
             let len = length(r)?;
-            r.bytes(len * width, "an NBT array")?;
+            r.sized(len, width, "an NBT array")?;
             Ok(len)
         },
         |&len| count(len, noun),
