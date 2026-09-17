@@ -30,7 +30,7 @@ and is built on that repo's `pomme-protocol` crate.
 - **Packet fields**: every packet in every supported version decodes into named fields, including chunk sections, entity data, particles and item components, each ported from the vanilla codec for every version it changed in. Chunk sections show their palettes rather than every block. A value that needs a registry Peel doesn't have yet, such as a command argument parser or a recipe display, ends decoding there, and the rest of that packet shows as raw bytes
 - **Web viewer**: a filterable tick timeline with a byte-level view of every packet, opened with `peel view`. Hovering a field highlights its bytes. Traces are decoded in your browser by the same Rust code as `peel dump`, and never uploaded
 - **Nothing to install for viewing**: the viewer is also hosted at [peel.pomme.rs](https://peel.pomme.rs), for opening or comparing a shared trace in any browser
-- **Diff against vanilla**: `peel diff` and the viewer line a trace up with a vanilla reference tick by tick and report packets that are missing, extra or out of order, and fields that differ, skipping values that change between any two sessions
+- **Diff against vanilla**: `peel diff` and the viewer line a trace up with a vanilla reference tick by tick and report packets that are missing, extra or out of order, and fields that differ, skipping values that change between any two sessions. A packet sent a few ticks early or late is reported as shifted, so timing doesn't read as different behaviour
 - **Reference traces**: vanilla captures of walking, sprint-jumping, combat, building and inventory use, with the setup and steps to record your own the same way
 - **Text or JSON output** for reading traces yourself or scripting against them
 
@@ -113,6 +113,11 @@ Lines both traces up tick by tick and lists what differs: packets missing from
 your trace, extra ones, ones in a different order within a tick, and fields
 with different values, each with a count and where it first happens. It
 compares what the client sends; add `--all` to include the server's packets.
+
+A packet both traces send, a few ticks apart, is reported as shifted rather
+than as a missing and an extra packet, since that is timing rather than
+different behaviour. `--shift-window` sets how far apart still counts, in
+ticks, and `--shift-window 0` reports both packets instead.
 
 Values that differ between any two sessions, such as positions, entity ids and
 signatures, are skipped; `--no-default-ignores` compares them too, and

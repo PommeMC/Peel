@@ -1,3 +1,4 @@
+import { shiftLabel } from "../lib/diff";
 import { count, groupKeyLabel } from "../lib/format";
 import type { Finding } from "../lib/trace";
 import { DirectionBadge } from "./Badges";
@@ -6,6 +7,7 @@ const KINDS: { kind: Finding["kind"]; heading: string; tone: string }[] = [
   { kind: "missing", heading: "Missing from the trace", tone: "diff-missing" },
   { kind: "extra", heading: "Extra in the trace", tone: "diff-extra" },
   { kind: "moved", heading: "In a different order", tone: "diff-moved" },
+  { kind: "shifted", heading: "A few ticks apart", tone: "diff-shifted" },
   { kind: "field", heading: "Fields that differ", tone: "diff-changed" },
 ];
 
@@ -47,6 +49,8 @@ export default function Findings({ findings, onJump }: Props) {
                         : `${count(finding.count, "difference")} in ${count(finding.compared, "pair")}`}
                       {" · first in "}
                       {groupKeyLabel(finding.group)}
+                      {finding.shift !== undefined &&
+                        `, ${shiftLabel(finding.shift)}`}
                     </span>
                     {finding.kind === "field" && (
                       <span className="finding-values">

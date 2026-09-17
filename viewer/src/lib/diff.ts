@@ -1,3 +1,4 @@
+import { count } from "./format";
 import type { Diff, DiffRow, Finding, GroupDiff } from "./trace";
 
 /** One line of the diff timeline. `ordinal` is the group's position in
@@ -12,16 +13,23 @@ export type DiffLine =
     }
   | { type: "row"; row: DiffRow; ordinal: number; index: number };
 
-export type RowStatus = "same" | "changed" | "moved" | "missing" | "extra";
+export type RowStatus =
+  "same" | "changed" | "moved" | "shifted" | "missing" | "extra";
 
 export const ROW_STATUS: Record<RowStatus, { marker: string; label: string }> =
   {
     same: { marker: "=", label: "The same in both" },
     changed: { marker: "≠", label: "Fields differ" },
     moved: { marker: "↕", label: "In both, in a different order" },
+    shifted: { marker: "↔", label: "In both, a few ticks apart" },
     missing: { marker: "−", label: "Only in the reference" },
     extra: { marker: "+", label: "Only in the trace" },
   };
+
+/** How far a shift moved a packet, as "3 ticks earlier". */
+export function shiftLabel(shift: number): string {
+  return `${count(Math.abs(shift), "tick")} ${shift < 0 ? "earlier" : "later"}`;
+}
 
 export function rowStatus(row: DiffRow): RowStatus {
   if (row.kind !== "same") return row.kind;

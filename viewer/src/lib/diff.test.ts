@@ -7,6 +7,7 @@ import {
   linePosition,
   rowDiffers,
   rowStatus,
+  shiftLabel,
 } from "./diff";
 import type { Diff, DiffRow, Finding } from "./trace";
 
@@ -18,6 +19,7 @@ const changed: DiffRow = {
   fields: [{ path: "input", reference: "0x01 forward", trace: "none" }],
 };
 const missing: DiffRow = { kind: "missing", reference: 2 };
+const shifted: DiffRow = { kind: "shifted", reference: 3, trace: 3, shift: -2 };
 const extra: DiffRow = { kind: "extra", trace: 2 };
 
 function diff(): Diff {
@@ -81,17 +83,23 @@ describe("buildDiffLines", () => {
 
 describe("rows", () => {
   it("differ when not the same or when fields changed", () => {
-    expect([same, changed, missing, extra].map(rowStatus)).toEqual([
+    expect([same, changed, missing, extra, shifted].map(rowStatus)).toEqual([
       "same",
       "changed",
       "missing",
       "extra",
+      "shifted",
     ]);
-    expect([same, changed, missing, extra].map(rowDiffers)).toEqual([
+    expect([same, changed, missing, extra, shifted].map(rowDiffers)).toEqual([
       false,
       true,
       true,
       true,
+      true,
+    ]);
+    expect([shiftLabel(-2), shiftLabel(1)]).toEqual([
+      "2 ticks earlier",
+      "1 tick later",
     ]);
     expect([...changedPaths(changed)]).toEqual(["input"]);
     expect([...changedPaths(missing)]).toEqual([]);

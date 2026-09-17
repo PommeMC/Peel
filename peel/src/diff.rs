@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use peel_decode::diff::{Diff, Finding, FindingKind, Options};
+use peel_decode::diff::{DEFAULT_SHIFT_WINDOW, Diff, Finding, FindingKind, Options};
 use peel_decode::fields::count;
 use peel_decode::names;
 
@@ -27,6 +27,10 @@ pub struct Args {
     /// `*.salt`). Repeatable.
     #[arg(long, value_name = "RULE")]
     ignore: Vec<String>,
+    /// How many ticks apart the same packet still counts as shifted rather
+    /// than missing and extra. 0 reports every such pair as both.
+    #[arg(long, value_name = "TICKS", default_value_t = DEFAULT_SHIFT_WINDOW)]
+    shift_window: i64,
     /// Also compare fields that differ between any two sessions, such as
     /// positions and ids.
     #[arg(long)]
@@ -45,6 +49,7 @@ pub fn run(args: Args) -> Result<bool> {
         offset: args.offset,
         ignores: args.ignore,
         no_default_ignores: args.no_default_ignores,
+        shift_window: Some(args.shift_window),
     };
     let diff = peel_decode::diff::diff(&reference, &trace, &options)?;
     cli::print(|out| {
@@ -96,6 +101,10 @@ fn write_text(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
         ),
         (FindingKind::Extra, "extra: in the trace, not the reference"),
         (FindingKind::Moved, "moved: in both, in a different order"),
+        (
+            FindingKind::Shifted,
+            "shifted: in both, a few ticks apart (timing, not behaviour)",
+        ),
         (FindingKind::Field, "fields that differ"),
     ] {
         let mut findings = diff.findings.iter().filter(|f| f.kind == kind).peekable();
@@ -139,9 +148,17 @@ fn write_finding(finding: &Finding, out: &mut impl Write) -> io::Result<()> {
         ),
         None => writeln!(
             out,
-            "{}, first in {}",
+            "{}, first in {}{}",
             count(finding.count, "packet"),
-            finding.group
+            finding.group,
+            match finding.shift {
+                Some(shift) => format!(
+                    " ({} {} in the trace)",
+                    count(shift.unsigned_abs() as usize, "tick"),
+                    if shift < 0 { "earlier" } else { "later" }
+                ),
+                None => String::new(),
+            }
         ),
     }
 }

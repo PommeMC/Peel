@@ -51,6 +51,16 @@ pub enum GroupKey {
     Window(i64),
 }
 
+impl GroupKey {
+    /// The tick or window number, or `None` before the first tick.
+    pub fn number(self) -> Option<i64> {
+        match self {
+            Self::Setup => None,
+            Self::Tick(n) | Self::Window(n) => Some(n),
+        }
+    }
+}
+
 impl fmt::Display for GroupKey {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {

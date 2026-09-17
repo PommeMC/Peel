@@ -1,4 +1,4 @@
-import { changedPaths, ROW_STATUS, rowStatus } from "../lib/diff";
+import { changedPaths, ROW_STATUS, rowStatus, shiftLabel } from "../lib/diff";
 import { groupLabel, preciseTime, thousands } from "../lib/format";
 import type { DiffRow, LoadedTrace, PacketEntry } from "../lib/trace";
 import PacketBody from "./PacketBody";
@@ -26,7 +26,12 @@ export default function DiffDetail({ reference, trace, row, packets }: Props) {
   ];
   return (
     <aside className="detail">
-      <p className={`diff-status diff-${status}`}>{ROW_STATUS[status].label}</p>
+      <p className={`diff-status diff-${status}`}>
+        {ROW_STATUS[status].label}
+        {"shift" in row &&
+          row.shift !== undefined &&
+          `: ${shiftLabel(row.shift)}`}
+      </p>
       {sides.map(
         (side) =>
           side &&

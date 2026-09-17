@@ -506,6 +506,9 @@ button {
 .diff-changed {
   --tone: var(--warning);
 }
+.diff-shifted {
+  --tone: var(--muted);
+}
 
 .badge,
 .chip {

@@ -89,9 +89,11 @@ export interface FieldDiff {
 /** Mirrors `peel_decode::diff::Row`: packets by record index in each trace. */
 export type DiffRow =
   | {
-      kind: "same" | "moved";
+      kind: "same" | "moved" | "shifted";
       reference: number;
       trace: number;
+      /** For `shifted`, how many groups later the trace sends it. */
+      shift?: number;
       fields?: FieldDiff[];
     }
   | { kind: "missing"; reference: number }
@@ -107,7 +109,9 @@ export interface GroupDiff {
 
 /** Mirrors `peel_decode::diff::Finding`. */
 export interface Finding {
-  kind: "missing" | "extra" | "moved" | "field";
+  kind: "missing" | "extra" | "moved" | "shifted" | "field";
+  /** For `shifted`, the first occurrence's shift in groups. */
+  shift?: number;
   direction: Direction;
   phase: Phase;
   id: number;

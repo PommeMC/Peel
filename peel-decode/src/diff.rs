@@ -1,7 +1,7 @@
 //! Compares a trace against a vanilla reference, tick by tick: packets that
 //! are missing, extra or out of order, and fields that differ.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use peel_trace::{Direction, Phase};
@@ -67,6 +67,10 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "intention.port",
 ];
 
+/// How many groups apart the same packet may be and still count as shifted
+/// rather than missing and extra, when [`Options::shift_window`] says nothing.
+pub const DEFAULT_SHIFT_WINDOW: i64 = 20;
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Options {
@@ -79,6 +83,9 @@ pub struct Options {
     /// to skip, on top of [`DEFAULT_IGNORES`].
     pub ignores: Vec<String>,
     pub no_default_ignores: bool,
+    /// Groups within which the same packet counts as shifted instead of
+    /// missing and extra. `Some(0)` reports every such pair as both.
+    pub shift_window: Option<i64>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -135,6 +142,9 @@ pub struct GroupDiff {
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Row {
     pub kind: RowKind,
+    /// For [`RowKind::Shifted`], how many groups later the trace sends it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shift: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,6 +159,9 @@ pub enum RowKind {
     Same,
     /// In both traces, but in a different order within the group.
     Moved,
+    /// In both traces, in a different group within the shift window. The row
+    /// sits in the reference's group.
+    Shifted,
     Missing,
     Extra,
 }
@@ -167,6 +180,7 @@ pub enum FindingKind {
     Missing,
     Extra,
     Moved,
+    Shifted,
     Field,
 }
 
@@ -175,6 +189,9 @@ pub enum FindingKind {
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Finding {
     pub kind: FindingKind,
+    /// For [`FindingKind::Shifted`], the first occurrence's shift.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shift: Option<i64>,
     pub direction: Direction,
     pub phase: Phase,
     pub id: u32,
@@ -223,7 +240,7 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
             ordinals.entry(*key).or_default()[side] = Some(ordinal);
         }
     }
-    let groups: Vec<GroupDiff> = ordinals
+    let mut groups: Vec<GroupDiff> = ordinals
         .into_iter()
         .map(|(key, ordinals)| GroupDiff {
             key,
@@ -232,6 +249,7 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
             rows: group_rows(ordinals, &sides, options, &ignores),
         })
         .collect();
+    pair_shifts(&mut groups, &sides, options, &ignores);
     let findings = findings(&groups, &sides);
     let count = |present: fn(&GroupDiff) -> bool| groups.iter().filter(|g| present(g)).count();
     let group_counts = GroupCounts {
@@ -325,24 +343,26 @@ fn group_rows(
                 moved,
             } => Row {
                 kind: if moved { RowKind::Moved } else { RowKind::Same },
+                shift: None,
                 reference: Some(reference.index),
                 trace: Some(trace.index),
                 fields: compare_fields([reference, trace], sides, ignores),
             },
-            Step::Missing(packet) => Row {
-                kind: RowKind::Missing,
-                reference: Some(packet.index),
-                trace: None,
-                fields: Vec::new(),
-            },
-            Step::Extra(packet) => Row {
-                kind: RowKind::Extra,
-                reference: None,
-                trace: Some(packet.index),
-                fields: Vec::new(),
-            },
+            Step::Missing(packet) => lone(RowKind::Missing, Some(packet.index), None),
+            Step::Extra(packet) => lone(RowKind::Extra, None, Some(packet.index)),
         })
         .collect()
+}
+
+/// A row for a packet only one trace has.
+fn lone(kind: RowKind, reference: Option<usize>, trace: Option<usize>) -> Row {
+    Row {
+        kind,
+        shift: None,
+        reference,
+        trace,
+        fields: Vec::new(),
+    }
 }
 
 /// Lines two packet sequences up along their longest common subsequence,
@@ -397,6 +417,87 @@ fn align<'a>(reference: &[&'a Packet], trace: &[&'a Packet]) -> Vec<Step<'a>> {
         }
     }
     steps.into_iter().flatten().collect()
+}
+
+/// Pairs a packet missing from one group with the same packet appearing
+/// extra in a nearby group: the client sends it, a few ticks apart. The pair
+/// becomes one shifted row in the reference's group, so timing differences
+/// don't read as a missing and an extra packet.
+fn pair_shifts(groups: &mut [GroupDiff], sides: &[Side; 2], options: &Options, ignores: &Ignores) {
+    let window = options.shift_window.unwrap_or(DEFAULT_SHIFT_WINDOW);
+    if window <= 0 {
+        return;
+    }
+
+    // Each packet's unpaired rows: missing ones, then extra ones.
+    let mut by_packet: HashMap<PacketKey, [Vec<Spot>; 2]> = HashMap::new();
+    for (ordinal, group) in groups.iter().enumerate() {
+        let Some(number) = group.key.number() else {
+            continue;
+        };
+        for (index, row) in group.rows.iter().enumerate() {
+            let (side, record) = match (row.kind, row.reference, row.trace) {
+                (RowKind::Missing, Some(reference), _) => (0, reference),
+                (RowKind::Extra, _, Some(trace)) => (1, trace),
+                _ => continue,
+            };
+            by_packet
+                .entry(key(sides[side].packets[record]))
+                .or_default()[side]
+                .push(Spot {
+                    number,
+                    ordinal,
+                    index,
+                    record,
+                });
+        }
+    }
+
+    let mut paired: HashSet<(usize, usize)> = HashSet::new();
+    for [missing, extra] in by_packet.values() {
+        // Both sides run in group order, so the nearest pairs match first.
+        let (mut m, mut e) = (0, 0);
+        while let (Some(reference), Some(trace)) = (missing.get(m), extra.get(e)) {
+            let shift = trace.number - reference.number;
+            if shift.abs() > window {
+                if shift > 0 {
+                    m += 1
+                } else {
+                    e += 1
+                }
+                continue;
+            }
+            let pair = [
+                sides[0].packets[reference.record],
+                sides[1].packets[trace.record],
+            ];
+            let row = &mut groups[reference.ordinal].rows[reference.index];
+            row.kind = RowKind::Shifted;
+            row.shift = Some(shift);
+            row.trace = Some(trace.record);
+            row.fields = compare_fields(pair, sides, ignores);
+            paired.insert((trace.ordinal, trace.index));
+            (m, e) = (m + 1, e + 1);
+        }
+    }
+
+    for (ordinal, group) in groups.iter_mut().enumerate() {
+        let mut index = 0;
+        group.rows.retain(|_| {
+            let keep = !paired.contains(&(ordinal, index));
+            index += 1;
+            keep
+        });
+    }
+}
+
+/// An unpaired row: its group's tick or window number, where the row sits,
+/// and the packet's record index in its own trace.
+struct Spot {
+    number: i64,
+    ordinal: usize,
+    index: usize,
+    record: usize,
 }
 
 /// The decoded fields that differ between a pair, in field order.
@@ -469,6 +570,7 @@ fn findings<'a>(groups: &'a [GroupDiff], sides: &[Side; 2]) -> Vec<Finding> {
             let kind = match row.kind {
                 RowKind::Same => None,
                 RowKind::Moved => Some(FindingKind::Moved),
+                RowKind::Shifted => Some(FindingKind::Shifted),
                 RowKind::Missing => Some(FindingKind::Missing),
                 RowKind::Extra => Some(FindingKind::Extra),
             };
@@ -487,6 +589,7 @@ fn findings<'a>(groups: &'a [GroupDiff], sides: &[Side; 2]) -> Vec<Finding> {
                     .or_insert_with(|| {
                         findings.push(Finding {
                             kind,
+                            shift: row.shift.filter(|_| kind == FindingKind::Shifted),
                             direction: packet.direction,
                             phase: packet.phase,
                             id: packet.id,
@@ -752,6 +855,44 @@ mod tests {
         assert_eq!(
             shape(&shifted),
             ["tick 0: extra 0, extra 1", "tick 1: same 0/2, same 1/3"]
+        );
+    }
+
+    #[test]
+    fn a_packet_a_few_ticks_early_is_shifted_not_missing() {
+        let loaded = || game("player_loaded", &[]);
+        let reference = [tick_end(), tick_end(), loaded(), tick_end()];
+        let trace = [loaded(), tick_end(), tick_end(), tick_end()];
+        let diff = run(&reference, &trace, Options::default());
+        assert_eq!(
+            shape(&diff),
+            [
+                "tick 1: same 0/1",
+                "tick 2: same 1/2",
+                "tick 3: shifted 2/0, same 3/3",
+            ]
+        );
+        assert_eq!(
+            summary(&diff),
+            [(FindingKind::Shifted, "player_loaded", None, 1)]
+        );
+        assert_eq!(diff.findings[0].shift, Some(-2));
+
+        // Outside the window it is a missing and an extra packet again.
+        let narrow = run(
+            &reference,
+            &trace,
+            Options {
+                shift_window: Some(1),
+                ..Options::default()
+            },
+        );
+        assert_eq!(
+            summary(&narrow),
+            [
+                (FindingKind::Missing, "player_loaded", None, 1),
+                (FindingKind::Extra, "player_loaded", None, 1),
+            ]
         );
     }
 
