@@ -134,6 +134,7 @@ peel/
     ├── wire.rs             # Frame splitting, decompression, handshake fields
     ├── cli.rs              # Trace loading and output shared by the commands
     ├── dump.rs             # `peel dump`: text and JSON output
+    ├── coverage.rs         # `peel coverage`: what decoded, and what stopped
     ├── diff.rs             # `peel diff`: text and JSON output
     ├── view.rs             # `peel view`: local server for the embedded viewer
     └── status.rs           # Log lines and capture's live status line
@@ -142,6 +143,7 @@ peel-decode/
     ├── lib.rs              # Loading a whole trace
     ├── names.rs            # Bridges trace types to pomme-protocol's tables
     ├── timeline.rs         # Tick grouping, shared by dump and the viewer
+    ├── coverage.rs         # What a trace decodes, shared by coverage and the viewer
     ├── diff.rs             # Tick-by-tick comparison, shared by diff and the viewer
     └── fields/
         ├── mod.rs          # Decoder lookup by phase, direction, name and protocol

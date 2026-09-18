@@ -6,9 +6,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use peel_decode::diff::{DEFAULT_SHIFT_WINDOW, Diff, Finding, FindingKind, Options};
 use peel_decode::fields::count;
-use peel_decode::names;
 
-use crate::cli::{self, direction_label};
+use crate::cli;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -129,13 +128,7 @@ fn write_finding(finding: &Finding, out: &mut impl Write) -> io::Result<()> {
         Some(path) => format!("{name}.{path}"),
         None => name.to_string(),
     };
-    write!(
-        out,
-        "  {}  {:<13}  {:<40}  ",
-        direction_label(finding.direction),
-        names::phase_label(finding.phase),
-        packet
-    )?;
+    cli::write_packet_label(out, finding.direction, finding.phase, &packet)?;
     let value = |value: &Option<String>| value.clone().unwrap_or_else(|| "(none)".into());
     match finding.compared {
         Some(compared) => writeln!(

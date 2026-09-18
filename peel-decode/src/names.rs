@@ -38,6 +38,15 @@ pub fn packet_name(
     table.name_of(table_phase(phase), table_direction(direction), id)
 }
 
+/// Every phase a connection passes through, in order.
+pub const PHASES: [Phase; 5] = [
+    Phase::Handshake,
+    Phase::Status,
+    Phase::Login,
+    Phase::Configuration,
+    Phase::Game,
+];
+
 pub fn phase_label(phase: Phase) -> &'static str {
     match phase {
         Phase::Handshake => "handshake",

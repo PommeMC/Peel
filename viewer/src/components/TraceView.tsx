@@ -14,6 +14,7 @@ import { toggled } from "../lib/sets";
 import { usePendingScroll } from "../lib/usePendingScroll";
 import { indexPackets, type LoadedTrace, type Phase } from "../lib/trace";
 import Activity from "./Activity";
+import Coverage from "./Coverage";
 import Filters from "./Filters";
 import PacketDetail, { EmptyDetail } from "./PacketDetail";
 import Summary, { ApproximateStat, Stat } from "./Summary";
@@ -52,6 +53,7 @@ export default function TraceView({ trace, actions, notice }: Props) {
     };
   });
   const [visible, setVisible] = useState<[number, number] | null>(null);
+  const [showCoverage, setShowCoverage] = useState(false);
   const search = useRef<HTMLInputElement>(null);
   const timeline = useRef<TimelineHandle>(null);
   usePendingScroll(selected, (record) =>
@@ -80,6 +82,11 @@ export default function TraceView({ trace, actions, notice }: Props) {
   }, [selected]);
 
   const packets = useMemo(() => indexPackets(trace.timeline), [trace]);
+  // Decoding every packet takes a moment, so only when the panel is opened.
+  const coverage = useMemo(
+    () => (showCoverage ? trace.coverage() : null),
+    [trace, showCoverage],
+  );
 
   const phaseCounts = useMemo(() => {
     const counts = new Map<Phase, number>();
@@ -136,7 +143,18 @@ export default function TraceView({ trace, actions, notice }: Props) {
             <Stat label="Size" value={bytes(trace.size)} />
           </>
         }
-        actions={actions}
+        actions={
+          <>
+            <button
+              className="button"
+              title="What this trace decodes, and where decoding stops"
+              onClick={() => setShowCoverage((shown) => !shown)}
+            >
+              {showCoverage ? "Close coverage" : "Coverage"}
+            </button>
+            {actions}
+          </>
+        }
         warnings={[trace.warning, notice]}
       />
       <Filters
@@ -167,7 +185,15 @@ export default function TraceView({ trace, actions, notice }: Props) {
           onToggleGroup={toggleGroup}
           onVisibleGroups={showVisible}
         />
-        {selectedEntry ? (
+        {coverage ? (
+          <Coverage
+            coverage={coverage}
+            onJump={(record) => {
+              setSelected(record);
+              setShowCoverage(false);
+            }}
+          />
+        ) : selectedEntry ? (
           <PacketDetail
             key={selected}
             trace={trace}

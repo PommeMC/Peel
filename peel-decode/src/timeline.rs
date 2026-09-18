@@ -76,12 +76,30 @@ impl fmt::Display for GroupKey {
 }
 
 /// How the packets of a timeline decoded, after [`Timeline::decode_fields`].
-#[derive(Default, Debug)]
+#[derive(Default, Clone, Copy, PartialEq, Debug, Serialize)]
 pub struct FieldCounts {
     pub total: usize,
     pub decoded: usize,
     pub partly: usize,
     pub failed: usize,
+}
+
+impl FieldCounts {
+    /// Counts one packet, by how far its fields decoded.
+    pub fn add(&mut self, fields: Option<&Decoded>) {
+        self.total += 1;
+        match fields {
+            Some(Decoded::Fields { .. }) => self.decoded += 1,
+            Some(Decoded::Partial { .. }) => self.partly += 1,
+            Some(Decoded::Failed { .. }) => self.failed += 1,
+            _ => {}
+        }
+    }
+
+    /// Whether any packet didn't decode in full.
+    pub fn stops(&self) -> bool {
+        self.partly + self.failed > 0
+    }
 }
 
 #[derive(Serialize)]
@@ -140,13 +158,7 @@ impl<'a> Timeline<'a> {
     pub fn field_counts(&self) -> FieldCounts {
         let mut counts = FieldCounts::default();
         for packet in self.packets() {
-            counts.total += 1;
-            match packet.fields {
-                Some(Decoded::Fields { .. }) => counts.decoded += 1,
-                Some(Decoded::Partial { .. }) => counts.partly += 1,
-                Some(Decoded::Failed { .. }) => counts.failed += 1,
-                _ => {}
-            }
+            counts.add(packet.fields.as_ref());
         }
         counts
     }

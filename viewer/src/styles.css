@@ -736,7 +736,8 @@ button {
   margin-top: 18px;
 }
 
-.findings ul {
+.findings ul,
+.finding-list {
   margin: 0;
   padding: 0;
   list-style: none;

@@ -2,6 +2,7 @@
 //! timeline and decoded fields. Shared by `peel dump` and the browser viewer,
 //! so both always agree.
 
+pub mod coverage;
 pub mod diff;
 pub mod fields;
 pub mod names;

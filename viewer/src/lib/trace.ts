@@ -67,8 +67,38 @@ export interface LoadedTrace {
   warning: string | null;
   frame(index: number): Uint8Array | undefined;
   fields(index: number): Decoded | undefined;
+  coverage(): Coverage;
   /** The wasm trace, for comparing against another. */
   handle: Trace;
+}
+
+/** Mirrors `peel_decode::coverage::Coverage`. */
+export interface Coverage {
+  protocol: number | null;
+  version: string | null;
+  support: { versions: number; packets: number; decoded: number };
+  counts: FieldCounts;
+  packets: PacketCoverage[];
+}
+
+/** Mirrors `peel_decode::FieldCounts`: how far a set of packets decoded. */
+export interface FieldCounts {
+  total: number;
+  decoded: number;
+  partly: number;
+  failed: number;
+}
+
+/** Mirrors `peel_decode::coverage::PacketCoverage`: one packet of a trace,
+ * counted by how its fields decoded. */
+export interface PacketCoverage {
+  direction: Direction;
+  phase: Phase;
+  id: number;
+  name: string | null;
+  counts: FieldCounts;
+  reason?: string;
+  record?: number;
 }
 
 /** Mirrors `peel_decode::diff::Options`. */
@@ -169,6 +199,7 @@ export async function openTrace(
       const json = trace.fields(index);
       return json === undefined ? undefined : JSON.parse(json);
     },
+    coverage: () => JSON.parse(trace.coverage()),
     handle: trace,
   };
 }

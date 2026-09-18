@@ -32,6 +32,7 @@ and is built on that repo's `pomme-protocol` crate.
 - **Nothing to install for viewing**: the viewer is also hosted at [peel.pomme.rs](https://peel.pomme.rs), for opening or comparing a shared trace in any browser
 - **Diff against vanilla**: `peel diff` and the viewer line a trace up with a vanilla reference tick by tick and report packets that are missing, extra or out of order, and fields that differ, skipping values that change between any two sessions. A packet sent a few ticks early or late is reported as shifted, so timing doesn't read as different behaviour
 - **Reference traces**: vanilla captures of walking, sprint-jumping, combat, building and inventory use, with the setup and steps to record your own the same way
+- **Coverage report**: `peel coverage` and the viewer say what decoded and which values Peel doesn't read yet, so nothing is quietly missing
 - **Text or JSON output** for reading traces yourself or scripting against them
 
 Planned:
@@ -88,6 +89,27 @@ each packet's decoded fields beneath it:
 ```
 
 Add `--json` for one JSON document you can script against.
+
+### See what decodes
+
+```bash
+peel coverage walk.trace
+```
+
+Reports how much of the trace decoded into fields, and lists the packets that
+stopped part way, with the value that stopped them and the record to look at:
+
+```text
+protocol 776 (26.2)
+15 versions, 3479 packets, every one has a decoder
+18838 of 18841 decoded, 3 partly, 0 failed
+
+stops early
+  to client  game  update_recipes  1 of 1, record #47: slot display #5 isn't decoded yet
+```
+
+`--all` lists every packet, `--json` prints the same as one document, and the
+viewer shows it under **Coverage**.
 
 ### View a trace
 

@@ -5,8 +5,8 @@ use std::io::{self, BufWriter, StdoutLock, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use peel_decode::{Grouping, Loaded, WINDOW_US};
-use peel_trace::Direction;
+use peel_decode::{Grouping, Loaded, WINDOW_US, names};
+use peel_trace::{Direction, Phase};
 use serde::Serialize;
 
 /// A trace file's bytes, and the trace read from them.
@@ -30,6 +30,22 @@ pub fn print(write: impl FnOnce(&mut BufWriter<StdoutLock>) -> io::Result<()>) -
 pub fn write_json(out: &mut impl Write, value: &impl Serialize) -> io::Result<()> {
     serde_json::to_writer_pretty(&mut *out, value).map_err(io::Error::other)?;
     writeln!(out)
+}
+
+/// The start of a row naming one packet, as `peel diff` and `peel coverage`
+/// both list them: direction, phase and what the row is about.
+pub fn write_packet_label(
+    out: &mut impl Write,
+    direction: Direction,
+    phase: Phase,
+    label: &str,
+) -> io::Result<()> {
+    write!(
+        out,
+        "  {}  {:<13}  {label:<40}  ",
+        direction_label(direction),
+        names::phase_label(phase)
+    )
 }
 
 pub fn direction_label(direction: Direction) -> &'static str {

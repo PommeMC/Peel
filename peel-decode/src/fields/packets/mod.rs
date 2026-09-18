@@ -363,12 +363,7 @@ mod tests {
                     for name in
                         (0..).map_while(|id| names::packet_name(table, phase, direction, id))
                     {
-                        if !all().any(|d| {
-                            d.phases.contains(&phase)
-                                && d.direction == direction
-                                && d.name == name
-                                && d.protocols.contains(&protocol)
-                        }) {
+                        if !super::super::has_decoder(protocol, phase, direction, name) {
                             missing.push(format!("{protocol} {phase:?} {direction:?} {name}"));
                         }
                     }

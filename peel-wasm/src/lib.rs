@@ -39,6 +39,14 @@ impl Trace {
             .transpose()?)
     }
 
+    /// What the trace decodes and where decoding stopped, as JSON, in the
+    /// shape of `peel coverage --json`.
+    pub fn coverage(&self) -> Result<String, JsError> {
+        Ok(serde_json::to_string(&peel_decode::coverage::coverage(
+            &self.loaded,
+        ))?)
+    }
+
     pub fn warning(&self) -> Option<String> {
         self.loaded.warning()
     }

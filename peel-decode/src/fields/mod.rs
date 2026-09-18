@@ -110,15 +110,36 @@ fn stopped(fields: Vec<Field>, err: reader::Error) -> Decoded {
     }
 }
 
+/// Whether a packet has a decoder in `protocol`.
+pub fn has_decoder(protocol: i32, phase: Phase, direction: Direction, name: &str) -> bool {
+    decoder(packets::DECODERS, protocol, phase, direction, name).is_some()
+}
+
+fn decoder<'a>(
+    decoders: &'a [&[PacketDecoder]],
+    protocol: i32,
+    phase: Phase,
+    direction: Direction,
+    name: &str,
+) -> Option<&'a PacketDecoder> {
+    decoders.iter().flat_map(|group| group.iter()).find(|d| {
+        d.name == name
+            && d.direction == direction
+            && d.phases.contains(&phase)
+            && d.protocols.contains(&protocol)
+    })
+}
+
 fn find<'a>(decoders: &'a [&[PacketDecoder]], record: &Record) -> Option<&'a PacketDecoder> {
     let table = PacketTable::for_protocol(record.protocol)?;
     let name = names::packet_name(table, record.phase, record.direction, record.packet_id)?;
-    decoders.iter().flat_map(|group| group.iter()).find(|d| {
-        d.name == name
-            && d.direction == record.direction
-            && d.phases.contains(&record.phase)
-            && d.protocols.contains(&record.protocol)
-    })
+    decoder(
+        decoders,
+        record.protocol,
+        record.phase,
+        record.direction,
+        name,
+    )
 }
 
 #[cfg(test)]
