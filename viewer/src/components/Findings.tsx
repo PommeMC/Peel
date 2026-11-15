@@ -6,6 +6,11 @@ import { DirectionBadge } from "./Badges";
 const KINDS: { kind: Finding["kind"]; heading: string; tone: string }[] = [
   { kind: "missing", heading: "Missing from the trace", tone: "diff-missing" },
   { kind: "extra", heading: "Extra in the trace", tone: "diff-extra" },
+  {
+    kind: "unanswered",
+    heading: "Never answered by the trace",
+    tone: "diff-missing",
+  },
   { kind: "moved", heading: "In a different order", tone: "diff-moved" },
   { kind: "shifted", heading: "A few ticks apart", tone: "diff-shifted" },
   { kind: "field", heading: "Fields that differ", tone: "diff-changed" },

@@ -214,7 +214,17 @@ ticks, and `--shift-window 0` reports both packets instead.
 
 Values that differ between any two sessions, such as positions, entity ids and
 signatures, are skipped; `--no-default-ignores` compares them too, and
-`--ignore keep_alive` or `--ignore '*.salt'` skips more. If one trace starts a
+`--ignore player_input` or `--ignore '*.salt'` skips more.
+
+Some packets the client only sends in answer to the server: `keep_alive`, and
+`chunk_batch_received` after each `chunk_batch_finished`. The server decides
+how many there are, so their number isn't compared with the reference's.
+What is checked is the trace alone: a `keep_alive` from the server that
+never gets one back with the same id, or a chunk batch that is never
+acknowledged, is reported as unanswered, and counts as behaviour. A request
+in the last 20 ticks of a trace is left out, since the capture may have ended
+before the reply. `--no-default-ignores` compares these replies packet for
+packet as well. If one trace starts a
 tick later, `--offset 1` lines them up. `peel diff` exits with 1 when the traces
 differ, so it can run in CI, and `--json` prints every aligned row.
 
