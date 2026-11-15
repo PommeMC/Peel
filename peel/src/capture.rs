@@ -18,6 +18,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -132,7 +133,7 @@ fn seconds(text: &str) -> Result<Duration, String> {
 #[derive(Debug, Serialize)]
 pub struct Report {
     event: &'static str,
-    /// The trace written, `null` when no login was recorded.
+    /// The trace file, `null` when no login was recorded.
     trace: Option<PathBuf>,
     protocol: Option<i32>,
     /// `null` for a protocol this build has no tables for.
@@ -232,13 +233,23 @@ fn proxy(args: &Args, stdout: &mut impl Write, report: &mut Report) -> Result<i3
         connect_timeout: args.connect_timeout,
         max_duration: args.max_duration,
     };
+    let opened = Arc::new(AtomicBool::new(false));
+    let open = opener(args.out.clone(), args.force);
     let outcome = serve(
         listener,
         &args.server,
-        opener(args.out.clone(), args.force),
+        {
+            let opened = opened.clone();
+            move || open().inspect(|_| opened.store(true, Ordering::Relaxed))
+        },
         &limits,
         &mut || command.as_mut().is_some_and(Running::exited),
-    )?;
+    );
+    // Also when writing it failed part way: the file holds what was flushed.
+    if opened.load(Ordering::Relaxed) {
+        report.trace = Some(args.out.clone());
+    }
+    let outcome = outcome?;
 
     let recorded = outcome.out.is_some();
     if let Some(stats) = outcome.stats {
@@ -248,7 +259,6 @@ fn proxy(args: &Args, stdout: &mut impl Write, report: &mut Report) -> Result<i3
         report.duration_ms = stats.duration.as_millis() as u64;
     }
     if recorded {
-        report.trace = Some(args.out.clone());
         note!("trace written to {}", args.out.display());
     }
     report.stopped = outcome.stopped.label();
@@ -932,7 +942,6 @@ fn record<W: Write>(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     use peel_decode::test_util::{latest, named, packet};
     use peel_trace::{Phase, TraceReader};
@@ -1353,35 +1362,32 @@ mod tests {
         }
     }
 
-    /// This test binary, re-run as the command capture starts. It runs only
-    /// `command_helper`, which acts on `PEEL_TEST_COMMAND`.
-    fn helper_command() -> Vec<OsString> {
-        vec![
+    /// Marks the argument telling `command_helper` what to do.
+    const BEHAVIOUR: &str = "behaviour=";
+
+    /// Captures with this test binary as the command, re-run to do
+    /// `behaviour` in `command_helper` and nothing else. The arguments after
+    /// the test's name are read by the helper; as test filters they match
+    /// nothing.
+    fn capture_with_helper(args: &mut Args, behaviour: &str) -> Report {
+        args.command = vec![
             std::env::current_exe().unwrap().into(),
             "--exact".into(),
             "capture::tests::command_helper".into(),
             "--nocapture".into(),
-            // Read back by the helper; as a test filter it matches nothing.
+            format!("{BEHAVIOUR}{behaviour}").into(),
             "{addr}".into(),
-        ]
-    }
-
-    /// Serialises the tests that set `PEEL_TEST_COMMAND` for their child.
-    static HELPER_ENV: Mutex<()> = Mutex::new(());
-
-    fn capture_with_helper(args: &Args, behaviour: &str) -> Report {
-        let _guard = HELPER_ENV.lock().unwrap_or_else(|err| err.into_inner());
-        // SAFETY: the tests that read or write this variable hold HELPER_ENV.
-        unsafe { std::env::set_var("PEEL_TEST_COMMAND", behaviour) };
-        let report = capture(args, &mut Vec::new());
-        unsafe { std::env::remove_var("PEEL_TEST_COMMAND") };
-        report
+        ];
+        capture(args, &mut Vec::new())
     }
 
     /// Not a test of its own: the command the tests below have capture run.
+    /// Only that child is given a behaviour, so an ordinary run does nothing.
     #[test]
     fn command_helper() {
-        let Ok(behaviour) = std::env::var("PEEL_TEST_COMMAND") else {
+        let Some(behaviour) =
+            std::env::args().find_map(|arg| arg.strip_prefix(BEHAVIOUR).map(str::to_owned))
+        else {
             return;
         };
         let (what, code) = behaviour.split_once(':').unwrap();
@@ -1472,11 +1478,10 @@ mod tests {
         let dir = scratch("connect-timeout");
         let mut args = args(&dir, sink_server());
         args.connect_timeout = Some(Duration::from_millis(150));
-        // A hung command is stopped with it rather than waited for.
-        args.command = helper_command();
 
+        // A hung command is stopped with it rather than waited for.
         let started = Instant::now();
-        let report = capture_with_helper(&args, "hang:0");
+        let report = capture_with_helper(&mut args, "hang:0");
         assert!(started.elapsed() < Duration::from_secs(60));
         assert_eq!(report.exit_code, exit::TIMEOUT, "{report:?}");
         assert_eq!(report.stopped, "connect_timeout");
@@ -1495,9 +1500,10 @@ mod tests {
         let ready = dir.join("ready");
         let mut args = args(&dir, sink_server());
         args.ready_file = Some(ready.clone());
-        // A login in time, so only the session's length can stop it.
-        args.connect_timeout = Some(Duration::from_millis(400));
-        args.max_duration = Some(Duration::from_millis(600));
+        // A login in time, so only the session's length can stop it. Both
+        // are long enough for a busy machine to get the login in first.
+        args.connect_timeout = Some(Duration::from_secs(2));
+        args.max_duration = Some(Duration::from_millis(2500));
         let out = args.out.clone();
 
         let handle = thread::spawn(move || capture(&args, &mut Vec::new()));
@@ -1520,16 +1526,15 @@ mod tests {
     fn the_command_logs_in_and_its_status_passes_through() {
         let dir = scratch("command");
         let mut args = args(&dir, sink_server());
-        args.command = helper_command();
         args.max_duration = Some(Duration::from_secs(60));
 
-        let report = capture_with_helper(&args, "login:0");
+        let report = capture_with_helper(&mut args, "login:0");
         assert_eq!(report.exit_code, exit::OK, "{report:?}");
         assert_eq!(report.command_exit_code, Some(0));
         assert_eq!(read_trace(&fs::read(&args.out).unwrap()).len(), 2);
 
         args.force = true;
-        let report = capture_with_helper(&args, "login:3");
+        let report = capture_with_helper(&mut args, "login:3");
         assert_eq!(report.exit_code, 3, "{report:?}");
         assert_eq!(report.command_exit_code, Some(3));
         assert_eq!(report.error, None);
@@ -1542,15 +1547,14 @@ mod tests {
     fn a_command_that_never_logs_in_fails_the_capture() {
         let dir = scratch("no-login");
         let mut args = args(&dir, sink_server());
-        args.command = helper_command();
 
-        let report = capture_with_helper(&args, "exit:0");
+        let report = capture_with_helper(&mut args, "exit:0");
         assert_eq!(report.exit_code, exit::CAPTURE_FAILED, "{report:?}");
         assert_eq!(report.stopped, "command_exited");
         assert!(report.error.is_some());
 
         // Its own failure is the one reported when it has one.
-        let report = capture_with_helper(&args, "exit:7");
+        let report = capture_with_helper(&mut args, "exit:7");
         assert_eq!(report.exit_code, 7, "{report:?}");
         assert!(!args.out.exists());
 
@@ -1567,7 +1571,6 @@ mod tests {
         let dir = scratch("encryption");
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut args = args(&dir, server.local_addr().unwrap().to_string());
-        args.command = helper_command();
         let table = latest();
         thread::spawn(move || {
             let (mut conn, _) = server.accept().unwrap();
@@ -1584,7 +1587,7 @@ mod tests {
             let _ = conn.read_to_end(&mut Vec::new());
         });
 
-        let report = capture_with_helper(&args, "login:0");
+        let report = capture_with_helper(&mut args, "login:0");
         assert_eq!(report.exit_code, exit::CAPTURE_FAILED, "{report:?}");
         assert_eq!(report.stopped, "encryption_requested");
         assert!(report.error.unwrap().contains("online-mode=false"));
