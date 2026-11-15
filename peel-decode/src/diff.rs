@@ -215,6 +215,14 @@ impl Diff {
     pub fn differs(&self) -> bool {
         !self.findings.is_empty()
     }
+
+    /// Whether any finding is more than timing: everything but a packet both
+    /// traces send a few groups apart.
+    pub fn differs_in_behaviour(&self) -> bool {
+        self.findings
+            .iter()
+            .any(|finding| finding.kind != FindingKind::Shifted)
+    }
 }
 
 pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Diff, Error> {

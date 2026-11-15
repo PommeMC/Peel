@@ -37,10 +37,34 @@ pub struct Args {
     /// Print one JSON document, with every row, instead of text.
     #[arg(long)]
     json: bool,
+    /// Which findings make the exit status 1. `behaviour` passes a diff whose
+    /// only findings are shifted packets, which is timing: the right gate
+    /// when the two traces were not played tick for tick alike.
+    #[arg(long, value_enum, value_name = "FINDINGS", default_value_t = FailOn::Any)]
+    fail_on: FailOn,
 }
 
-/// Whether the traces differ.
-pub fn run(args: Args) -> Result<bool> {
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum FailOn {
+    /// Any finding at all.
+    Any,
+    /// Missing, extra and moved packets and fields that differ; not shifted
+    /// ones.
+    #[value(alias = "behavior")]
+    Behaviour,
+}
+
+impl FailOn {
+    fn fails(self, diff: &Diff) -> bool {
+        match self {
+            Self::Any => diff.differs(),
+            Self::Behaviour => diff.differs_in_behaviour(),
+        }
+    }
+}
+
+/// The exit code: whether the traces differ in what `--fail-on` names.
+pub fn run(args: Args) -> Result<i32> {
     let (_, trace) = cli::read_trace(&args.trace)?;
     let (_, reference) = cli::read_trace(&args.against)?;
     let options = Options {
@@ -69,7 +93,11 @@ pub fn run(args: Args) -> Result<bool> {
             eprintln!("peel: {}: {warning}", path.display());
         }
     }
-    Ok(diff.differs())
+    Ok(if args.fail_on.fails(&diff) {
+        cli::exit::DIFFERS
+    } else {
+        cli::exit::OK
+    })
 }
 
 fn write_text(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
@@ -118,7 +146,8 @@ fn write_text(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
 
     match diff.findings.len() {
         0 => writeln!(out, "\nno differences"),
-        n => writeln!(out, "\n{}", count(n, "finding")),
+        n if diff.differs_in_behaviour() => writeln!(out, "\n{}", count(n, "finding")),
+        n => writeln!(out, "\n{}, all timing", count(n, "finding")),
     }
 }
 
@@ -226,5 +255,42 @@ mod tests {
         );
         assert!(text.ends_with("\nno differences\n"), "{text}");
         assert!(!diff.differs());
+    }
+
+    /// Three ticks, with `player_loaded` in the tick given, if any.
+    fn loaded_in_tick(tick: Option<usize>) -> peel_decode::Loaded {
+        let mut packets: Vec<(&str, &[u8])> = vec![("client_tick_end", &[]); 3];
+        if let Some(tick) = tick {
+            packets.insert(tick, ("player_loaded", &[]));
+        }
+        trace(&packets)
+    }
+
+    #[test]
+    fn fail_on_behaviour_passes_a_timing_only_diff() {
+        let options = Options::default();
+        let reference = loaded_in_tick(Some(2));
+        let against =
+            |tick| peel_decode::diff::diff(&reference, &loaded_in_tick(tick), &options).unwrap();
+        let timing = against(Some(0));
+        assert_eq!(timing.findings.len(), 1);
+        assert_eq!(timing.findings[0].kind, FindingKind::Shifted);
+        assert!(FailOn::Any.fails(&timing));
+        assert!(!FailOn::Behaviour.fails(&timing));
+        let text = text(&timing);
+        assert!(text.ends_with("\n1 finding, all timing\n"), "{text}");
+        let json = serde_json::to_value(&timing).unwrap();
+        assert_eq!(json["findings"][0]["kind"], "shifted");
+
+        // The same session without the packet at all is behaviour.
+        let real = against(None);
+        assert!(FailOn::Any.fails(&real));
+        assert!(FailOn::Behaviour.fails(&real));
+        let json = serde_json::to_value(&real).unwrap();
+        assert_eq!(json["findings"][0]["kind"], "missing");
+
+        let same = against(Some(2));
+        assert!(!FailOn::Any.fails(&same));
+        assert!(!FailOn::Behaviour.fails(&same));
     }
 }
