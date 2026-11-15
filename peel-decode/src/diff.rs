@@ -8,6 +8,7 @@ use peel_trace::{Direction, Phase};
 use serde::{Deserialize, Serialize};
 
 use crate::fields::{self, Decoded, Field};
+use crate::names::TickMarker;
 use crate::{GroupKey, Grouping, Loaded, Packet, Timeline};
 
 /// Fields that differ between any two sessions, such as positions, ids and
@@ -86,12 +87,26 @@ pub struct Options {
     /// Groups within which the same packet counts as shifted instead of
     /// missing and extra. `Some(0)` reports every such pair as both.
     pub shift_window: Option<i64>,
+    /// Packet names. When any are given, `offset` is worked out instead of
+    /// read: it lines up the first numbered group of each trace that holds
+    /// one of them. Before that group the shift window grows by the offset,
+    /// since that is how much further apart the two joins now sit.
+    pub align_on: Vec<String>,
+    /// Leave out the groups after the last complete one both traces have.
+    pub trim_end: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
-    Protocols { reference: i32, trace: i32 },
+    Protocols {
+        reference: i32,
+        trace: i32,
+    },
     NoPackets,
+    /// One trace has none of the `align_on` packets in a numbered group.
+    NothingToAlignOn {
+        in_reference: bool,
+    },
 }
 
 impl fmt::Display for Error {
@@ -103,6 +118,11 @@ impl fmt::Display for Error {
                  diff compares traces of one version"
             ),
             Self::NoPackets => write!(f, "both traces need packets to compare"),
+            Self::NothingToAlignOn { in_reference } => write!(
+                f,
+                "the {} sends none of the packets to align on after its first tick starts",
+                if *in_reference { "reference" } else { "trace" }
+            ),
         }
     }
 }
@@ -115,6 +135,9 @@ pub struct Diff {
     pub version: Option<&'static str>,
     pub grouping: Grouping,
     pub all_directions: bool,
+    /// The trace's group `n + offset` was compared with the reference's `n`,
+    /// and every group key here is in the reference's numbering.
+    pub offset: i64,
     /// Every rule applied, defaults included.
     pub ignores: Vec<String>,
     pub group_counts: GroupCounts,
@@ -237,9 +260,22 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
         });
     }
     let ignores = Ignores::new(options);
+    // The reference's group that both traces are lined up on, if any.
+    let anchor = if options.align_on.is_empty() {
+        None
+    } else {
+        let [reference, trace] = [0, 1].map(|side| {
+            first_group_with(&timelines[side], &options.align_on).ok_or(Error::NothingToAlignOn {
+                in_reference: side == 0,
+            })
+        });
+        let reference = reference?;
+        Some((reference, trace? - reference))
+    };
+    let offset = anchor.map_or(options.offset, |(_, offset)| offset);
     let sides = [
         Side::new(reference, &timelines[0], 0),
-        Side::new(trace, &timelines[1], options.offset),
+        Side::new(trace, &timelines[1], offset),
     ];
 
     let mut ordinals: BTreeMap<GroupKey, [Option<usize>; 2]> = BTreeMap::new();
@@ -257,7 +293,20 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
             rows: group_rows(ordinals, &sides, options, &ignores),
         })
         .collect();
-    pair_shifts(&mut groups, &sides, options, &ignores);
+    let window = options.shift_window.unwrap_or(DEFAULT_SHIFT_WINDOW);
+    if window > 0 {
+        let window_at = |number: i64| match anchor {
+            Some((anchor, offset)) if number < anchor => window + offset.abs(),
+            _ => window,
+        };
+        pair_shifts(&mut groups, &sides, &window_at, &ignores);
+    }
+    if options.trim_end
+        && let [Some(reference), Some(trace)] = sides.each_ref().map(Side::last_complete)
+    {
+        let end = reference.min(trace);
+        groups.retain(|group| group.key.number().is_none_or(|number| number <= end));
+    }
     let findings = findings(&groups, &sides);
     let count = |present: fn(&GroupDiff) -> bool| groups.iter().filter(|g| present(g)).count();
     let group_counts = GroupCounts {
@@ -270,10 +319,22 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
         version: timelines[0].version,
         grouping: timelines[0].grouping,
         all_directions: options.all_directions,
+        offset,
         ignores: ignores.rules.iter().map(ToString::to_string).collect(),
         group_counts,
         groups,
         findings,
+    })
+}
+
+/// The number of the first tick or window holding a packet named in `names`.
+fn first_group_with(timeline: &Timeline, names: &[String]) -> Option<i64> {
+    timeline.groups.iter().find_map(|group| {
+        let named = |packet: &Packet| names.iter().any(|name| packet.name == Some(name.as_str()));
+        group
+            .key()
+            .number()
+            .filter(|_| group.packets.iter().any(named))
     })
 }
 
@@ -304,6 +365,27 @@ impl<'a> Side<'a> {
             keys,
             packets: timeline.packets().collect(),
         }
+    }
+
+    /// The number of the last group that ran to its end: a trace usually
+    /// stops part way through a tick, and half a tick compares as missing
+    /// packets.
+    fn last_complete(&self) -> Option<i64> {
+        let marker = self.timeline.protocol.and_then(TickMarker::for_protocol);
+        let complete = |group: &crate::Group| {
+            marker.is_none_or(|marker| {
+                group
+                    .packets
+                    .last()
+                    .is_some_and(|last| marker.ends_tick(&self.loaded.records[last.index]))
+            })
+        };
+        self.timeline
+            .groups
+            .iter()
+            .zip(&self.keys)
+            .rev()
+            .find_map(|(group, key)| key.number().filter(|_| complete(group)))
     }
 }
 
@@ -467,12 +549,14 @@ fn in_step<'a>(reference: &[&'a Packet], trace: &[&'a Packet]) -> Vec<Step<'a>> 
 /// extra in a nearby group: the client sends it, a few ticks apart. The pair
 /// becomes one shifted row in the reference's group, so timing differences
 /// don't read as a missing and an extra packet.
-fn pair_shifts(groups: &mut [GroupDiff], sides: &[Side; 2], options: &Options, ignores: &Ignores) {
-    let window = options.shift_window.unwrap_or(DEFAULT_SHIFT_WINDOW);
-    if window <= 0 {
-        return;
-    }
-
+///
+/// `window_at` is how far apart a pair may be, by the reference's group.
+fn pair_shifts(
+    groups: &mut [GroupDiff],
+    sides: &[Side; 2],
+    window_at: &dyn Fn(i64) -> i64,
+    ignores: &Ignores,
+) {
     // Each packet's unpaired rows: missing ones, then extra ones.
     let mut by_packet: HashMap<PacketKey, [Vec<Spot>; 2]> = HashMap::new();
     for (ordinal, group) in groups.iter().enumerate() {
@@ -503,7 +587,7 @@ fn pair_shifts(groups: &mut [GroupDiff], sides: &[Side; 2], options: &Options, i
         let (mut m, mut e) = (0, 0);
         while let (Some(reference), Some(trace)) = (missing.get(m), extra.get(e)) {
             let shift = trace.number - reference.number;
-            if shift.abs() > window {
+            if shift.abs() > window_at(reference.number) {
                 if shift > 0 {
                     m += 1
                 } else {
@@ -1185,5 +1269,132 @@ mod tests {
         assert!(finding.get("path").is_none());
         let options: Options = serde_json::from_str(r#"{"offset": 2}"#).unwrap();
         assert_eq!((options.offset, options.all_directions), (2, false));
+    }
+
+    /// A session as steps: so many empty ticks, then a tick sending the
+    /// packet, if there is one.
+    fn session(steps: &[(usize, Option<Spec>)]) -> Vec<Spec> {
+        let mut packets = Vec::new();
+        for (idle, packet) in steps {
+            packets.extend(vec![tick_end(); *idle]);
+            packets.extend(
+                packet
+                    .iter()
+                    .cloned()
+                    .chain(packet.as_ref().map(|_| tick_end())),
+            );
+        }
+        packets
+    }
+
+    fn player_loaded() -> Option<Spec> {
+        Some(game("player_loaded", &[]))
+    }
+
+    #[test]
+    fn align_on_lines_up_the_first_named_packet() {
+        let idle_then_input = |idle| session(&[(idle, Some(input(1))), (0, player_loaded())]);
+        let (reference, trace) = (idle_then_input(2), idle_then_input(30));
+        let unaligned = run(&reference, &trace, Options::default());
+        assert!(unaligned.differs_in_behaviour());
+
+        let aligned = run(
+            &reference,
+            &trace,
+            Options {
+                align_on: vec!["set_carried_item".into(), "player_input".into()],
+                trim_end: true,
+                ..Options::default()
+            },
+        );
+        assert_eq!(aligned.offset, 28);
+        // The trace's 28 idle ticks before the reference begins are the only
+        // difference, and they are in the reference's numbering.
+        assert_eq!(
+            summary(&aligned),
+            [(FindingKind::Extra, "client_tick_end", None, 28)]
+        );
+        assert_eq!(aligned.findings[0].group, GroupKey::Tick(-27));
+    }
+
+    #[test]
+    fn aligning_widens_the_shift_window_before_the_aligned_packet_only() {
+        // `player_loaded` follows the join, not the input: 25 ticks in, in
+        // both, while the input is 28 ticks later in the trace. The item
+        // switch follows the input, `late` ticks after it.
+        let played = |idle: usize, late: usize| {
+            session(&[
+                (25, player_loaded()),
+                (idle, Some(input(1))),
+                (late, Some(game("set_carried_item", &[0, 3]))),
+                (30 - late, None),
+            ])
+        };
+        let aligned = run(
+            &played(2, 1),
+            &played(30, 29),
+            Options {
+                align_on: vec!["player_input".into()],
+                ..Options::default()
+            },
+        );
+        assert_eq!(aligned.offset, 28);
+        let kinds = |name| -> Vec<_> {
+            aligned
+                .findings
+                .iter()
+                .filter(|f| f.name == Some(name))
+                .map(|f| (f.kind, f.shift))
+                .collect()
+        };
+        assert_eq!(kinds("player_loaded"), [(FindingKind::Shifted, Some(-28))]);
+        assert_eq!(
+            kinds("set_carried_item"),
+            [(FindingKind::Missing, None), (FindingKind::Extra, None)]
+        );
+    }
+
+    #[test]
+    fn align_on_needs_the_packet_in_both_traces() {
+        let options = Options {
+            align_on: vec!["player_input".into()],
+            ..Options::default()
+        };
+        let [with, without] =
+            [vec![input(1), tick_end()], vec![tick_end()]].map(|p| load(LATEST.protocol, &p));
+        for (reference, trace, in_reference) in [(&with, &without, false), (&without, &with, true)]
+        {
+            assert_eq!(
+                diff(reference, trace, &options).unwrap_err(),
+                Error::NothingToAlignOn { in_reference }
+            );
+        }
+    }
+
+    #[test]
+    fn trim_end_stops_at_the_last_tick_both_traces_finish() {
+        // The trace stops part way through its third tick; the reference
+        // runs two ticks longer.
+        let steps = [(0, Some(input(1))), (0, player_loaded()), (2, None)];
+        let reference = session(&steps);
+        let mut trace = session(&steps[..2]);
+        trace.push(input(0));
+        let options = |trim_end| Options {
+            trim_end,
+            ..Options::default()
+        };
+        assert!(run(&reference, &trace, options(false)).differs());
+
+        let trimmed = run(&reference, &trace, options(true));
+        assert!(!trimmed.differs(), "{:?}", summary(&trimmed));
+        assert_eq!(trimmed.groups.last().unwrap().key, GroupKey::Tick(2));
+        assert_eq!(
+            trimmed.group_counts,
+            GroupCounts {
+                compared: 2,
+                only_in_reference: 0,
+                only_in_trace: 0
+            }
+        );
     }
 }

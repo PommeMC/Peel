@@ -22,6 +22,16 @@ pub struct Args {
     /// Compare the trace's tick N+OFFSET with the reference's tick N.
     #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
     offset: i64,
+    /// Work the offset out: line up the first tick of each trace that sends
+    /// this packet, such as `player_input`. Repeat it to align on whichever
+    /// of several comes first. Before that tick, packets that many ticks
+    /// further apart still count as shifted, on top of `--shift-window`.
+    #[arg(long, value_name = "PACKET", conflicts_with = "offset")]
+    align_on: Vec<String>,
+    /// Stop at the last tick both traces finish, so one running longer isn't
+    /// reported as missing or extra packets.
+    #[arg(long)]
+    trim_end: bool,
     /// Skip a packet (`keep_alive`) or a field (`player_input.input`,
     /// `*.salt`). Repeatable.
     #[arg(long, value_name = "RULE")]
@@ -73,6 +83,8 @@ pub fn run(args: Args) -> Result<i32> {
         ignores: args.ignore,
         no_default_ignores: args.no_default_ignores,
         shift_window: Some(args.shift_window),
+        align_on: args.align_on,
+        trim_end: args.trim_end,
     };
     let diff = peel_decode::diff::diff(&reference, &trace, &options)?;
     cli::print(|out| {
@@ -102,6 +114,13 @@ pub fn run(args: Args) -> Result<i32> {
 
 fn write_text(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
     cli::write_version(out, diff.protocol, diff.version, diff.grouping)?;
+    if diff.offset != 0 {
+        writeln!(
+            out,
+            "ticks are the reference's: its tick N is the trace's tick N{:+}",
+            diff.offset
+        )?;
+    }
     writeln!(
         out,
         "{} packets, skipping {} ignore rules",

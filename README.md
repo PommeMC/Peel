@@ -216,6 +216,22 @@ each finding's `kind` is `missing`, `extra`, `moved` (reordered within a tick),
 missing and extra, so a client that waits far longer than vanilla does not pass
 as timing.
 
+Two runs of one script still start their first action a different number of
+ticks after joining, and one runs a little longer:
+
+```bash
+peel diff mine.trace --against vanilla.trace \
+    --align-on player_input --align-on swing --trim-end --fail-on behaviour
+```
+
+`--align-on` works the offset out by lining up the first tick in each trace
+that sends one of the named packets. That moves the two joins further apart by
+the same number of ticks, so before the aligned tick the shift window grows by
+that much; after it, the window is unchanged.
+`--trim-end` stops at the last tick both traces finish. With an offset, every
+tick in the output and in `--json` is the reference's, and `--json` reports the
+`offset` used.
+
 `peel view mine.trace --against vanilla.trace` opens the same comparison in the
 viewer, or choose **Compare…** with a trace open. At
 [peel.pomme.rs](https://peel.pomme.rs), choose both traces under **Compare a
