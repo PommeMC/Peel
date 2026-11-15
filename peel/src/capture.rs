@@ -526,6 +526,18 @@ impl<W> Capture<W> {
         self.open.lock().unwrap().is_none()
     }
 
+    fn connected(&self) -> bool {
+        !self.live.lock().unwrap().sockets.is_empty()
+    }
+
+    /// Ends `conn`'s recording, if it has one, and tells `serve`.
+    fn finish(&self, conn: &mut Connection<W>) {
+        if let Some(finished) = conn.finish() {
+            // `serve` has gone only if it gave up waiting for this.
+            let _ = self.finished.send(finished);
+        }
+    }
+
     /// Stops capture: no later login is recorded, and every connection is
     /// closed. Returns the recorded connection's end, if there was a login.
     fn close(&self, done: &mpsc::Receiver<Finished<W>>) -> Result<Option<Finished<W>>> {
@@ -639,6 +651,11 @@ pub fn serve<W: Write + Send + 'static>(
     let (mut stopped, finished) = loop {
         match listener.accept() {
             Ok((client, peer)) => {
+                // Here rather than in its thread, so a command that exits
+                // right after connecting is seen to have connected.
+                capture
+                    .track(peer, &client)
+                    .context("accepting a connection")?;
                 let capture = capture.clone();
                 let server = server.to_owned();
                 thread::spawn(move || {
@@ -666,13 +683,15 @@ pub fn serve<W: Write + Send + 'static>(
 
         if exited_at.is_none() && command_exited() {
             exited_at = Some(Instant::now());
+            // Accept what it connected with before judging whether it did.
+            continue;
         }
         let past = |limit: Option<Duration>| limit.is_some_and(|limit| started.elapsed() >= limit);
         let stopped = if past(limits.max_duration) {
             Stopped::MaxDuration
         } else if past(limits.connect_timeout) && !capture.logged_in() {
             Stopped::ConnectTimeout
-        } else if exited_at.is_some_and(|at| !capture.logged_in() || at.elapsed() >= EXIT_GRACE) {
+        } else if exited_at.is_some_and(|at| !capture.connected() || at.elapsed() >= EXIT_GRACE) {
             // Its sockets closed with it, so a connection still open after
             // the grace belongs to something the command left running.
             Stopped::CommandExited
@@ -726,14 +745,7 @@ fn connection<W: Write + Send + 'static>(
     server: &str,
     capture: &Capture<W>,
 ) -> Result<()> {
-    let accepted = Instant::now();
-    let accepted_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
-    // Accepted sockets can inherit the listener's non-blocking mode.
-    client.set_nonblocking(false)?;
-    if !capture.track(peer, &client)? {
-        return Ok(());
-    }
-    let result = forward(&client, peer, server, (accepted, accepted_unix_ms), capture);
+    let result = forward(&client, peer, server, capture);
     capture.untrack(peer);
     result
 }
@@ -742,9 +754,12 @@ fn forward<W: Write + Send + 'static>(
     client: &TcpStream,
     peer: SocketAddr,
     server: &str,
-    (accepted, accepted_unix_ms): (Instant, u64),
     capture: &Capture<W>,
 ) -> Result<()> {
+    let accepted = Instant::now();
+    let accepted_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+    // Accepted sockets can inherit the listener's non-blocking mode.
+    client.set_nonblocking(false)?;
     let server = TcpStream::connect(server).with_context(|| format!("connecting to {server}"))?;
     if !capture.track(peer, &server)? {
         return Ok(());
@@ -772,10 +787,9 @@ fn forward<W: Write + Send + 'static>(
     });
 
     let mut conn = conn.lock().unwrap();
-    if let Some(finished) = conn.finish() {
-        // `serve` has gone only if it gave up waiting for this.
-        let _ = capture.finished.send(finished);
-    } else if let Some(failure) = conn.failure {
+    capture.finish(&mut conn);
+    // Still there only if this was not the recorded connection.
+    if let Some(failure) = conn.failure {
         note!("{peer}: {failure}");
     }
     Ok(())
@@ -820,7 +834,7 @@ impl<W> Connection<W> {
                 packets: recording.packets,
                 duration: self.accepted.elapsed(),
             },
-            failure: self.failure,
+            failure: self.failure.take(),
         })
     }
 }
@@ -861,6 +875,11 @@ impl<W: Write + Send + 'static> Connection<W> {
             }
             // A failed send means the recorder already stopped and said why.
             let _ = recording.records.send(fed.records);
+        }
+        if !forward {
+            // Not left to the connection closing: a client that never hangs
+            // up would keep a failed capture running.
+            capture.finish(self);
         }
         forward
     }
@@ -1202,8 +1221,8 @@ mod tests {
         upstream.write_all(&encryption).unwrap();
         assert_closed(&mut client);
         assert_closed(&mut upstream);
-        drop((client, upstream));
 
+        // Neither side has hung up, and capture ends all the same.
         let outcome = handle.join().unwrap().unwrap();
         let failure = Failure::EncryptionRequested;
         assert_eq!(outcome.stopped, Stopped::Failed(failure));
@@ -1241,8 +1260,8 @@ mod tests {
             .unwrap();
         assert_closed(&mut client);
         assert_closed(&mut upstream);
-        drop((client, upstream));
 
+        // Neither side has hung up, and capture ends all the same.
         let outcome = handle.join().unwrap().unwrap();
         let failure = Failure::Unsupported(unknown);
         assert_eq!(outcome.stopped, Stopped::Failed(failure));
@@ -1398,9 +1417,9 @@ mod tests {
                 let port = std::env::var("PEEL_PORT").unwrap();
                 assert_eq!(addr, format!("{host}:{port}"));
                 assert_eq!(std::env::args().next_back(), Some(addr.clone()));
-                let _client = log_in(addr);
-                // Long enough for the proxy to have read it before the close.
-                thread::sleep(Duration::from_millis(200));
+                // Closed at once: the login is recorded however soon the
+                // command is gone.
+                drop(log_in(addr));
             }
             "exit" => {}
             "hang" => thread::sleep(Duration::from_secs(120)),
