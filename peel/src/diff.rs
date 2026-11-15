@@ -23,9 +23,10 @@ pub struct Args {
     #[arg(long, default_value_t = 0, allow_negative_numbers = true)]
     offset: i64,
     /// Work the offset out: line up the first tick of each trace that sends
-    /// this packet, such as `player_input`. Repeat it to align on whichever
-    /// of several comes first. Before that tick, packets that many ticks
-    /// further apart still count as shifted, on top of `--shift-window`.
+    /// this packet, such as `player_input`, among the packets compared.
+    /// Repeat it to align on whichever of several comes first. Before that
+    /// tick, packets that many ticks further apart still count as shifted,
+    /// on top of `--shift-window`.
     #[arg(long, value_name = "PACKET", conflicts_with = "offset")]
     align_on: Vec<String>,
     /// Stop at the last tick both traces finish, so one running longer isn't
@@ -114,12 +115,26 @@ pub fn run(args: Args) -> Result<i32> {
 
 fn write_text(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
     cli::write_version(out, diff.protocol, diff.version, diff.grouping)?;
+    match diff.aligned_on {
+        Some([reference, trace]) if reference == trace => {
+            writeln!(out, "aligned on each trace's first {reference}")?
+        }
+        Some([reference, trace]) => writeln!(
+            out,
+            "aligned the reference's first {reference} with the trace's first {trace}: they \
+             are different packets, so the traces may not be lined up on the same action"
+        )?,
+        None => {}
+    }
     if diff.offset != 0 {
         writeln!(
             out,
             "ticks are the reference's: its tick N is the trace's tick N{:+}",
             diff.offset
         )?;
+    }
+    if let Some(last) = diff.trimmed_after {
+        writeln!(out, "stopped after {last}, the last both traces finish")?;
     }
     writeln!(
         out,

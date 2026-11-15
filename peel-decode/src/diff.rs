@@ -5,10 +5,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use peel_trace::{Direction, Phase};
+use pomme_protocol::PacketTable;
 use serde::{Deserialize, Serialize};
 
 use crate::fields::{self, Decoded, Field};
-use crate::names::TickMarker;
+use crate::names::{self, TickMarker};
 use crate::{GroupKey, Grouping, Loaded, Packet, Timeline};
 
 /// Fields that differ between any two sessions, such as positions, ids and
@@ -96,6 +97,13 @@ pub struct Options {
     pub trim_end: bool,
 }
 
+impl Options {
+    /// Whether `packet` goes a way this diff compares.
+    fn compares(&self, packet: &Packet) -> bool {
+        self.all_directions || packet.direction == Direction::Serverbound
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Error {
     Protocols {
@@ -107,6 +115,8 @@ pub enum Error {
     NothingToAlignOn {
         in_reference: bool,
     },
+    /// An `align_on` name that is no packet of the traces' version.
+    UnknownPacket(String),
 }
 
 impl fmt::Display for Error {
@@ -123,6 +133,12 @@ impl fmt::Display for Error {
                 "the {} sends none of the packets to align on after its first tick starts",
                 if *in_reference { "reference" } else { "trace" }
             ),
+            Self::UnknownPacket(name) => {
+                write!(
+                    f,
+                    "{name} is not a packet in this version, so it can't be aligned on"
+                )
+            }
         }
     }
 }
@@ -138,6 +154,14 @@ pub struct Diff {
     /// The trace's group `n + offset` was compared with the reference's `n`,
     /// and every group key here is in the reference's numbering.
     pub offset: i64,
+    /// With `align_on`: the packet the offset lined up, in the reference and
+    /// in the trace. They differ when the traces' first actions do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aligned_on: Option<[&'static str; 2]>,
+    /// With `trim_end`: the last group compared, when later ones were left
+    /// out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trimmed_after: Option<GroupKey>,
     /// Every rule applied, defaults included.
     pub ignores: Vec<String>,
     pub group_counts: GroupCounts,
@@ -260,23 +284,35 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
         });
     }
     let ignores = Ignores::new(options);
-    // The reference's group that both traces are lined up on, if any.
-    let anchor = if options.align_on.is_empty() {
+    // Where each trace is lined up, reference first: the group's number and
+    // the packet found in it.
+    let aligned = if options.align_on.is_empty() {
         None
     } else {
+        check_packets(protocol, &options.align_on)?;
         let [reference, trace] = [0, 1].map(|side| {
-            first_group_with(&timelines[side], &options.align_on).ok_or(Error::NothingToAlignOn {
+            first_group_with(&timelines[side], options).ok_or(Error::NothingToAlignOn {
                 in_reference: side == 0,
             })
         });
-        let reference = reference?;
-        Some((reference, trace? - reference))
+        Some([reference?, trace?])
     };
-    let offset = anchor.map_or(options.offset, |(_, offset)| offset);
+    let offset = aligned.map_or(options.offset, |[(reference, _), (trace, _)]| {
+        trace - reference
+    });
     let sides = [
         Side::new(reference, &timelines[0], 0),
         Side::new(trace, &timelines[1], offset),
     ];
+    // Aligning leaves one trace with ticks before the other begins. Each
+    // holds its tick marker with nothing to compare it to, which the group
+    // counts already say, so there the marker is left out.
+    let both_begun = aligned.and_then(|_| {
+        sides
+            .iter()
+            .filter_map(|side| side.keys.iter().find_map(|key| key.number()))
+            .max()
+    });
 
     let mut ordinals: BTreeMap<GroupKey, [Option<usize>; 2]> = BTreeMap::new();
     for (side, s) in sides.iter().enumerate() {
@@ -290,22 +326,33 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
             key,
             reference: ordinals[0],
             trace: ordinals[1],
-            rows: group_rows(ordinals, &sides, options, &ignores),
+            rows: group_rows(
+                ordinals,
+                &sides,
+                options,
+                &ignores,
+                key.number().is_some_and(|number| Some(number) < both_begun),
+            ),
         })
         .collect();
     let window = options.shift_window.unwrap_or(DEFAULT_SHIFT_WINDOW);
     if window > 0 {
-        let window_at = |number: i64| match anchor {
-            Some((anchor, offset)) if number < anchor => window + offset.abs(),
+        let window_at = |number: i64| match aligned {
+            Some([(anchor, _), _]) if number < anchor => window + offset.abs(),
             _ => window,
         };
         pair_shifts(&mut groups, &sides, &window_at, &ignores);
     }
+    let mut trimmed_after = None;
     if options.trim_end
         && let [Some(reference), Some(trace)] = sides.each_ref().map(Side::last_complete)
     {
         let end = reference.min(trace);
+        let untrimmed = groups.len();
         groups.retain(|group| group.key.number().is_none_or(|number| number <= end));
+        if groups.len() < untrimmed {
+            trimmed_after = groups.last().map(|group| group.key);
+        }
     }
     let findings = findings(&groups, &sides);
     let count = |present: fn(&GroupDiff) -> bool| groups.iter().filter(|g| present(g)).count();
@@ -320,6 +367,8 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
         grouping: timelines[0].grouping,
         all_directions: options.all_directions,
         offset,
+        aligned_on: aligned.map(|sides| sides.map(|(_, packet)| packet)),
+        trimmed_after,
         ignores: ignores.rules.iter().map(ToString::to_string).collect(),
         group_counts,
         groups,
@@ -327,14 +376,37 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
     })
 }
 
-/// The number of the first tick or window holding a packet named in `names`.
-fn first_group_with(timeline: &Timeline, names: &[String]) -> Option<i64> {
+/// Fails on a name that no phase or direction of `protocol` has, so a typo
+/// isn't taken for a packet neither trace happens to send.
+fn check_packets(protocol: i32, names: &[String]) -> Result<(), Error> {
+    let Some(table) = PacketTable::for_protocol(protocol) else {
+        return Ok(());
+    };
+    let known = |name: &str| {
+        names::PHASES.into_iter().any(|phase| {
+            [Direction::Serverbound, Direction::Clientbound]
+                .into_iter()
+                .any(|direction| names::packet_id(table, phase, direction, name).is_some())
+        })
+    };
+    match names.iter().find(|name| !known(name)) {
+        Some(name) => Err(Error::UnknownPacket(name.clone())),
+        None => Ok(()),
+    }
+}
+
+/// The first tick or window holding a compared packet named in
+/// `options.align_on`: its number, and that packet.
+fn first_group_with(timeline: &Timeline, options: &Options) -> Option<(i64, &'static str)> {
     timeline.groups.iter().find_map(|group| {
-        let named = |packet: &Packet| names.iter().any(|name| packet.name == Some(name.as_str()));
+        let number = group.key().number()?;
         group
-            .key()
-            .number()
-            .filter(|_| group.packets.iter().any(named))
+            .packets
+            .iter()
+            .filter(|packet| options.compares(packet))
+            .filter_map(|packet| packet.name)
+            .find(|name| options.align_on.iter().any(|wanted| wanted == name))
+            .map(|name| (number, name))
     })
 }
 
@@ -346,6 +418,7 @@ struct Side<'a> {
     keys: Vec<GroupKey>,
     /// Packets by record index.
     packets: Vec<&'a Packet>,
+    marker: Option<TickMarker>,
 }
 
 impl<'a> Side<'a> {
@@ -364,21 +437,25 @@ impl<'a> Side<'a> {
             timeline,
             keys,
             packets: timeline.packets().collect(),
+            marker: timeline.protocol.and_then(TickMarker::for_protocol),
         }
+    }
+
+    fn ends_tick(&self, packet: &Packet) -> bool {
+        self.marker
+            .is_some_and(|marker| marker.ends_tick(&self.loaded.records[packet.index]))
     }
 
     /// The number of the last group that ran to its end: a trace usually
     /// stops part way through a tick, and half a tick compares as missing
     /// packets.
     fn last_complete(&self) -> Option<i64> {
-        let marker = self.timeline.protocol.and_then(TickMarker::for_protocol);
         let complete = |group: &crate::Group| {
-            marker.is_none_or(|marker| {
-                group
+            self.marker.is_none()
+                || group
                     .packets
                     .last()
-                    .is_some_and(|last| marker.ends_tick(&self.loaded.records[last.index]))
-            })
+                    .is_some_and(|last| self.ends_tick(last))
         };
         self.timeline
             .groups
@@ -412,6 +489,7 @@ fn group_rows(
     sides: &[Side; 2],
     options: &Options,
     ignores: &Ignores,
+    skip_marker: bool,
 ) -> Vec<Row> {
     let compared = |side: usize| -> Vec<&Packet> {
         let Some(ordinal) = ordinals[side] else {
@@ -420,8 +498,9 @@ fn group_rows(
         sides[side].timeline.groups[ordinal]
             .packets
             .iter()
-            .filter(|p| options.all_directions || p.direction == Direction::Serverbound)
+            .filter(|p| options.compares(p))
             .filter(|p| !ignores.packet(p.name))
+            .filter(|p| !(skip_marker && sides[side].ends_tick(p)))
             .collect()
     };
     align(&compared(0), &compared(1))
@@ -1291,6 +1370,13 @@ mod tests {
         Some(game("player_loaded", &[]))
     }
 
+    fn aligning_on(names: &[&str]) -> Options {
+        Options {
+            align_on: names.iter().map(ToString::to_string).collect(),
+            ..Options::default()
+        }
+    }
+
     #[test]
     fn align_on_lines_up_the_first_named_packet() {
         let idle_then_input = |idle| session(&[(idle, Some(input(1))), (0, player_loaded())]);
@@ -1302,19 +1388,48 @@ mod tests {
             &reference,
             &trace,
             Options {
-                align_on: vec!["set_carried_item".into(), "player_input".into()],
                 trim_end: true,
-                ..Options::default()
+                ..aligning_on(&["set_carried_item", "player_input"])
             },
         );
         assert_eq!(aligned.offset, 28);
-        // The trace's 28 idle ticks before the reference begins are the only
-        // difference, and they are in the reference's numbering.
-        assert_eq!(
-            summary(&aligned),
-            [(FindingKind::Extra, "client_tick_end", None, 28)]
+        assert_eq!(aligned.aligned_on, Some(["player_input"; 2]));
+        // The trace's 28 idle ticks before the reference begins are counted,
+        // in the reference's numbering, and are not findings.
+        assert!(!aligned.differs(), "{:?}", summary(&aligned));
+        assert_eq!(aligned.groups[0].key, GroupKey::Tick(-27));
+        assert_eq!(aligned.group_counts.only_in_trace, 28);
+    }
+
+    #[test]
+    fn align_on_reads_only_the_packets_being_compared() {
+        // The server's `keep_alive` comes first in both; the client answers
+        // it a tick later in the reference.
+        let keep_alive = |direction| Some((direction, Phase::Game, "keep_alive", vec![0; 8]));
+        let answered_after = |ticks: usize| {
+            session(&[
+                (0, keep_alive(Clientbound)),
+                (ticks, keep_alive(Serverbound)),
+            ])
+        };
+        let options = |all_directions| Options {
+            all_directions,
+            ..aligning_on(&["keep_alive"])
+        };
+        let (reference, trace) = (answered_after(1), answered_after(0));
+        assert_eq!(run(&reference, &trace, options(false)).offset, -1);
+        assert_eq!(run(&reference, &trace, options(true)).offset, 0);
+    }
+
+    #[test]
+    fn align_on_names_the_packets_when_they_differ() {
+        let first = |packet| session(&[(1, Some(packet)), (1, None)]);
+        let diff = run(
+            &first(game("set_carried_item", &[0, 3])),
+            &first(input(1)),
+            aligning_on(&["set_carried_item", "player_input"]),
         );
-        assert_eq!(aligned.findings[0].group, GroupKey::Tick(-27));
+        assert_eq!(diff.aligned_on, Some(["set_carried_item", "player_input"]));
     }
 
     #[test]
@@ -1333,10 +1448,7 @@ mod tests {
         let aligned = run(
             &played(2, 1),
             &played(30, 29),
-            Options {
-                align_on: vec!["player_input".into()],
-                ..Options::default()
-            },
+            aligning_on(&["player_input"]),
         );
         assert_eq!(aligned.offset, 28);
         let kinds = |name| -> Vec<_> {
@@ -1356,10 +1468,7 @@ mod tests {
 
     #[test]
     fn align_on_needs_the_packet_in_both_traces() {
-        let options = Options {
-            align_on: vec!["player_input".into()],
-            ..Options::default()
-        };
+        let options = aligning_on(&["player_input"]);
         let [with, without] =
             [vec![input(1), tick_end()], vec![tick_end()]].map(|p| load(LATEST.protocol, &p));
         for (reference, trace, in_reference) in [(&with, &without, false), (&without, &with, true)]
@@ -1369,6 +1478,12 @@ mod tests {
                 Error::NothingToAlignOn { in_reference }
             );
         }
+
+        let typo = aligning_on(&["player_input", "player_inputs"]);
+        assert_eq!(
+            diff(&with, &with, &typo).unwrap_err(),
+            Error::UnknownPacket("player_inputs".into())
+        );
     }
 
     #[test]
@@ -1383,11 +1498,18 @@ mod tests {
             trim_end,
             ..Options::default()
         };
-        assert!(run(&reference, &trace, options(false)).differs());
+        let whole = run(&reference, &trace, options(false));
+        assert!(whole.differs());
+        assert_eq!(whole.trimmed_after, None);
 
         let trimmed = run(&reference, &trace, options(true));
         assert!(!trimmed.differs(), "{:?}", summary(&trimmed));
+        assert_eq!(trimmed.trimmed_after, Some(GroupKey::Tick(2)));
         assert_eq!(trimmed.groups.last().unwrap().key, GroupKey::Tick(2));
+        assert_eq!(
+            run(&reference, &reference, options(true)).trimmed_after,
+            None
+        );
         assert_eq!(
             trimmed.group_counts,
             GroupCounts {
