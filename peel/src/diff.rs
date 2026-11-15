@@ -41,8 +41,8 @@ pub struct Args {
     /// than missing and extra. 0 reports every such pair as both.
     #[arg(long, value_name = "TICKS", default_value_t = DEFAULT_SHIFT_WINDOW)]
     shift_window: i64,
-    /// Also compare fields that differ between any two sessions, such as
-    /// positions and ids.
+    /// Also compare what differs between any two sessions: fields such as
+    /// positions and ids, and how many replies the server asked for.
     #[arg(long)]
     no_default_ignores: bool,
     /// Print one JSON document, with every row, instead of text.
@@ -161,6 +161,10 @@ fn write_text(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
             "missing: in the reference, not the trace",
         ),
         (FindingKind::Extra, "extra: in the trace, not the reference"),
+        (
+            FindingKind::Unanswered,
+            "unanswered: sent by the server, never answered by the trace",
+        ),
         (FindingKind::Moved, "moved: in both, in a different order"),
         (
             FindingKind::Shifted,

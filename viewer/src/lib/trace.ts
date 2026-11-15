@@ -139,7 +139,7 @@ export interface GroupDiff {
 
 /** Mirrors `peel_decode::diff::Finding`. */
 export interface Finding {
-  kind: "missing" | "extra" | "moved" | "shifted" | "field";
+  kind: "missing" | "extra" | "unanswered" | "moved" | "shifted" | "field";
   /** For `shifted`, the first occurrence's shift in groups. */
   shift?: number;
   direction: Direction;

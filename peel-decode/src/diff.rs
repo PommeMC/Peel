@@ -1,7 +1,7 @@
 //! Compares a trace against a vanilla reference, tick by tick: packets that
 //! are missing, extra or out of order, and fields that differ.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use peel_trace::{Direction, Phase};
@@ -69,6 +69,37 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "intention.port",
 ];
 
+/// A serverbound packet the client only sends to answer one of the server's.
+/// The server sets how many there are and when, so comparing their number
+/// with the reference's says nothing about the client; what can be wrong is
+/// a request that got no reply.
+struct Paced {
+    request: &'static str,
+    reply: &'static str,
+    /// The field a reply repeats from its request, where it has one.
+    /// Without one, replies answer requests in order.
+    echoes: Option<&'static str>,
+}
+
+/// From the vanilla client: `handleKeepAlive` answers with the request's id,
+/// and `handleChunkBatchFinished` sends one `chunk_batch_received`.
+const PACED: [Paced; 2] = [
+    Paced {
+        request: "keep_alive",
+        reply: "keep_alive",
+        echoes: Some("id"),
+    },
+    Paced {
+        request: "chunk_batch_finished",
+        reply: "chunk_batch_received",
+        echoes: None,
+    },
+];
+
+/// How many groups a trace must go on for after a request before the request
+/// counts as unanswered, so one sent just before the capture ended does not.
+const REPLY_GRACE: usize = 20;
+
 /// How many groups apart the same packet may be and still count as shifted
 /// rather than missing and extra, when [`Options::shift_window`] says nothing.
 pub const DEFAULT_SHIFT_WINDOW: i64 = 20;
@@ -84,6 +115,8 @@ pub struct Options {
     /// Packets (`keep_alive`) or fields (`move_player_pos.flags`, `*.salt`)
     /// to skip, on top of [`DEFAULT_IGNORES`].
     pub ignores: Vec<String>,
+    /// Compare the [`DEFAULT_IGNORES`] too, and the replies the server
+    /// paces, packet for packet.
     pub no_default_ignores: bool,
     /// Groups within which the same packet counts as shifted instead of
     /// missing and extra. `Some(0)` reports every such pair as both.
@@ -101,6 +134,13 @@ impl Options {
     /// Whether `packet` goes a way this diff compares.
     fn compares(&self, packet: &Packet) -> bool {
         self.all_directions || packet.direction == Direction::Serverbound
+    }
+
+    /// Whether `packet` is a reply whose number is the server's doing.
+    fn paces(&self, packet: &Packet) -> bool {
+        !self.no_default_ignores
+            && packet.direction == Direction::Serverbound
+            && PACED.iter().any(|paced| packet.name == Some(paced.reply))
     }
 }
 
@@ -226,6 +266,9 @@ pub struct FieldDiff {
 pub enum FindingKind {
     Missing,
     Extra,
+    /// A request from the server that the trace never answers. Found in the
+    /// trace alone, whatever the reference does.
+    Unanswered,
     Moved,
     Shifted,
     Field,
@@ -354,7 +397,9 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
             trimmed_after = groups.last().map(|group| group.key);
         }
     }
-    let findings = findings(&groups, &sides);
+    let mut findings = findings(&groups, &sides);
+    findings.extend(unanswered(&sides[1]));
+    findings.sort_by_key(|finding| finding.kind);
     let count = |present: fn(&GroupDiff) -> bool| groups.iter().filter(|g| present(g)).count();
     let group_counts = GroupCounts {
         compared: count(|g| g.reference.is_some() && g.trace.is_some()),
@@ -441,6 +486,13 @@ impl<'a> Side<'a> {
         }
     }
 
+    /// The value of `packet`'s decoded field at `path`.
+    fn field(&self, packet: &Packet, path: &str) -> Option<String> {
+        leaves(fields::decode(&self.loaded.records[packet.index]))
+            .into_iter()
+            .find_map(|(leaf, value)| (leaf == path).then_some(value))
+    }
+
     fn ends_tick(&self, packet: &Packet) -> bool {
         self.marker
             .is_some_and(|marker| marker.ends_tick(&self.loaded.records[packet.index]))
@@ -498,7 +550,7 @@ fn group_rows(
         sides[side].timeline.groups[ordinal]
             .packets
             .iter()
-            .filter(|p| options.compares(p))
+            .filter(|p| options.compares(p) && !options.paces(p))
             .filter(|p| !ignores.packet(p.name))
             .filter(|p| !(skip_marker && sides[side].ends_tick(p)))
             .collect()
@@ -830,7 +882,60 @@ fn findings<'a>(groups: &'a [GroupDiff], sides: &[Side; 2]) -> Vec<Finding> {
                 .copied();
         }
     }
-    findings.sort_by_key(|finding| finding.kind);
+    findings
+}
+
+/// The server's requests that `side` never answers, one finding per kind of
+/// request.
+fn unanswered(side: &Side) -> Vec<Finding> {
+    let groups = &side.timeline.groups;
+    let mut findings = Vec::new();
+    for paced in &PACED {
+        // Requests waiting for their reply, by phase and the echoed value.
+        let mut waiting: HashMap<_, VecDeque<(usize, &Packet)>> = HashMap::new();
+        for (ordinal, group) in groups.iter().enumerate() {
+            for packet in &group.packets {
+                let (is_request, name) = match packet.direction {
+                    Direction::Clientbound => (true, paced.request),
+                    Direction::Serverbound => (false, paced.reply),
+                };
+                if packet.name != Some(name) {
+                    continue;
+                }
+                let echoed = paced.echoes.and_then(|path| side.field(packet, path));
+                let queue = waiting.entry((packet.phase, echoed)).or_default();
+                if is_request {
+                    queue.push_back((ordinal, packet));
+                } else {
+                    queue.pop_front();
+                }
+            }
+        }
+        let mut left: Vec<_> = waiting
+            .into_values()
+            .flatten()
+            .filter(|(ordinal, _)| ordinal + REPLY_GRACE < groups.len())
+            .collect();
+        left.sort_by_key(|(_, packet)| packet.index);
+        if let Some(&(ordinal, first)) = left.first() {
+            findings.push(Finding {
+                kind: FindingKind::Unanswered,
+                shift: None,
+                direction: first.direction,
+                phase: first.phase,
+                id: first.id,
+                name: first.name,
+                path: None,
+                count: left.len(),
+                compared: None,
+                group: side.keys[ordinal],
+                reference: None,
+                trace: Some(first.index),
+                reference_value: None,
+                trace_value: None,
+            });
+        }
+    }
     findings
 }
 
@@ -1517,6 +1622,111 @@ mod tests {
                 only_in_reference: 0,
                 only_in_trace: 0
             }
+        );
+    }
+
+    fn keep_alive(direction: Direction, id: u8) -> Option<Spec> {
+        Some((
+            direction,
+            Phase::Game,
+            "keep_alive",
+            vec![0, 0, 0, 0, 0, 0, 0, id],
+        ))
+    }
+
+    /// `asked` keep-alives from the server, each answered a tick later with
+    /// the id `answer` makes of it, then `after` more ticks.
+    fn kept_alive(asked: u8, answer: fn(u8) -> u8, after: usize) -> Vec<Spec> {
+        let mut steps = Vec::new();
+        for id in 1..=asked {
+            steps.push((0, keep_alive(Clientbound, id)));
+            steps.push((0, keep_alive(Serverbound, answer(id))));
+        }
+        steps.push((after, None));
+        session(&steps)
+    }
+
+    fn same(id: u8) -> u8 {
+        id
+    }
+
+    /// Answers the second request with an id nothing asked for.
+    fn second_wrong(id: u8) -> u8 {
+        if id == 2 { 9 } else { id }
+    }
+
+    fn unanswered_in(diff: &Diff) -> Vec<&Finding> {
+        diff.findings
+            .iter()
+            .filter(|finding| finding.kind == FindingKind::Unanswered)
+            .collect()
+    }
+
+    #[test]
+    fn how_many_replies_the_server_asked_for_is_not_a_finding() {
+        // As many ticks in both, with two more requests in the reference.
+        let (reference, trace) = (kept_alive(3, same, 30), kept_alive(1, same, 34));
+        let diff = run(&reference, &trace, Options::default());
+        assert!(!diff.differs(), "{:?}", summary(&diff));
+
+        let counted = run(
+            &reference,
+            &trace,
+            Options {
+                no_default_ignores: true,
+                ..Options::default()
+            },
+        );
+        assert!(
+            summary(&counted).contains(&(FindingKind::Missing, "keep_alive", None, 2)),
+            "{:?}",
+            summary(&counted)
+        );
+    }
+
+    #[test]
+    fn a_request_the_trace_never_answers_is_a_finding() {
+        let reference = kept_alive(2, same, 30);
+        let diff = run(
+            &reference,
+            &kept_alive(2, second_wrong, 30),
+            Options::default(),
+        );
+        let unanswered = unanswered_in(&diff);
+        assert_eq!(unanswered.len(), 1, "{:?}", summary(&diff));
+        let finding = unanswered[0];
+        assert_eq!(
+            (finding.direction, finding.name, finding.count),
+            (Clientbound, Some("keep_alive"), 1)
+        );
+        assert_eq!(finding.group, GroupKey::Tick(3));
+        assert!(diff.differs_in_behaviour());
+
+        // Asked just before the capture ended, it may only be cut short.
+        let diff = run(
+            &reference,
+            &kept_alive(2, second_wrong, 5),
+            Options::default(),
+        );
+        assert!(unanswered_in(&diff).is_empty(), "{:?}", summary(&diff));
+    }
+
+    #[test]
+    fn each_chunk_batch_is_answered_once() {
+        let finished = || {
+            let packet = (Clientbound, Phase::Game, "chunk_batch_finished", vec![1]);
+            (0, Some(packet))
+        };
+        let received = || (0, Some(game("chunk_batch_received", &[0; 4])));
+        let answered = session(&[finished(), received(), finished(), received(), (30, None)]);
+        let one_short = session(&[finished(), received(), finished(), (30, None)]);
+
+        assert!(!run(&answered, &answered, Options::default()).differs());
+        let diff = run(&answered, &one_short, Options::default());
+        assert!(
+            summary(&diff).contains(&(FindingKind::Unanswered, "chunk_batch_finished", None, 1)),
+            "{:?}",
+            summary(&diff)
         );
     }
 }
