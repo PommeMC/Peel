@@ -79,9 +79,15 @@ peel capture --listen 127.0.0.1:0 --out run.trace \
 Peel starts the proxy, runs the command with the proxy's address in its
 environment (`PEEL_ADDR` as `host:port`, plus `PEEL_HOST` and `PEEL_PORT`),
 stops capturing when the command exits, and exits with the command's status.
+A client that takes the address as an argument needs no wrapper: `{addr}`,
+`{host}` and `{port}` in the command's arguments are replaced the same way,
+as in `-- ./client --server {addr}`.
+
 If capture fails or times out first, Peel stops the command. It stops the
 process it started, not processes that one started, so a wrapper script should
-`exec` the client.
+`exec` the client. On Windows, a bare `bash` runs WSL's `bash.exe` from
+`System32` rather than Git Bash, and WSL does not pass the `PEEL_*` variables
+on; give the full path to the `bash.exe` you mean.
 
 - `--listen 127.0.0.1:0` picks a free port. The address in use is printed as
   the one line on stdout once the proxy accepts connections, and written to

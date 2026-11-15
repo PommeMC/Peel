@@ -113,8 +113,9 @@ pub struct Args {
     #[arg(long)]
     json: bool,
     /// Run this command with the proxy's address in PEEL_ADDR, PEEL_HOST and
-    /// PEEL_PORT, stop capturing when it exits, and exit with its status.
-    /// Its stdout goes to stderr.
+    /// PEEL_PORT, and in place of {addr}, {host} and {port} in its arguments.
+    /// Capture stops when it exits, and exits with its status. Its stdout
+    /// goes to stderr.
     #[arg(last = true, value_name = "COMMAND")]
     command: Vec<OsString>,
 }
@@ -363,6 +364,30 @@ fn reachable(bound: SocketAddr) -> SocketAddr {
     SocketAddr::new(ip, bound.port())
 }
 
+/// The proxy's address as the command is given it: each part is `PEEL_<PART>`
+/// in its environment and `{part}` in its arguments.
+fn address_parts(addr: SocketAddr) -> [(&'static str, String); 3] {
+    [
+        ("addr", addr.to_string()),
+        ("host", addr.ip().to_string()),
+        ("port", addr.port().to_string()),
+    ]
+}
+
+/// `arg` with each `{part}` replaced by its value. An argument that isn't
+/// Unicode is passed on as it is.
+fn fill(arg: &OsString, parts: &[(&str, String)]) -> OsString {
+    let Some(text) = arg.to_str() else {
+        return arg.clone();
+    };
+    parts
+        .iter()
+        .fold(text.to_string(), |text, (part, value)| {
+            text.replace(&format!("{{{part}}}"), value)
+        })
+        .into()
+}
+
 /// The command `peel capture -- <command>` runs, killed when dropped unless
 /// it has exited.
 struct Running {
@@ -372,13 +397,15 @@ struct Running {
 
 impl Running {
     fn spawn(program: &OsString, args: &[OsString], bound: SocketAddr) -> Result<Self> {
-        let addr = reachable(bound);
+        let parts = address_parts(reachable(bound));
         let name = Path::new(program).display();
         let child = Command::new(program)
-            .args(args)
-            .env("PEEL_ADDR", addr.to_string())
-            .env("PEEL_HOST", addr.ip().to_string())
-            .env("PEEL_PORT", addr.port().to_string())
+            .args(args.iter().map(|arg| fill(arg, &parts)))
+            .envs(
+                parts
+                    .iter()
+                    .map(|(part, value)| (format!("PEEL_{}", part.to_uppercase()), value)),
+            )
             // stdout is Peel's own: the ready line and the `--json` summary.
             .stdout(Stdio::from(io::stderr()))
             .spawn()
@@ -1334,6 +1361,8 @@ mod tests {
             "--exact".into(),
             "capture::tests::command_helper".into(),
             "--nocapture".into(),
+            // Read back by the helper; as a test filter it matches nothing.
+            "{addr}".into(),
         ]
     }
 
@@ -1362,6 +1391,7 @@ mod tests {
                 let host = std::env::var("PEEL_HOST").unwrap();
                 let port = std::env::var("PEEL_PORT").unwrap();
                 assert_eq!(addr, format!("{host}:{port}"));
+                assert_eq!(std::env::args().next_back(), Some(addr.clone()));
                 let _client = log_in(addr);
                 // Long enough for the proxy to have read it before the close.
                 thread::sleep(Duration::from_millis(200));
@@ -1576,5 +1606,14 @@ mod tests {
         assert_eq!(reach("0.0.0.0:25566"), "127.0.0.1:25566");
         assert_eq!(reach("[::]:25566"), "[::1]:25566");
         assert_eq!(reach("192.168.1.5:25566"), "192.168.1.5:25566");
+    }
+
+    #[test]
+    fn placeholders_in_arguments_become_the_address() {
+        let parts = address_parts("127.0.0.1:25566".parse().unwrap());
+        let fill = |arg: &str| fill(&arg.into(), &parts);
+        assert_eq!(fill("--server={addr}"), "--server=127.0.0.1:25566");
+        assert_eq!(fill("{host} {port} {port}"), "127.0.0.1 25566 25566");
+        assert_eq!(fill("{other} addr"), "{other} addr");
     }
 }
