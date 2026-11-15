@@ -1261,7 +1261,6 @@ mod tests {
         assert_closed(&mut client);
         assert_closed(&mut upstream);
 
-        // Neither side has hung up, and capture ends all the same.
         let outcome = handle.join().unwrap().unwrap();
         let failure = Failure::Unsupported(unknown);
         assert_eq!(outcome.stopped, Stopped::Failed(failure));
