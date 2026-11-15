@@ -83,9 +83,19 @@ A client that takes the address as an argument needs no wrapper: `{addr}`,
 `{host}` and `{port}` in the command's arguments are replaced the same way,
 as in `-- ./client --server {addr}`.
 
-If capture fails or times out first, Peel stops the command. It stops the
-process it started, not processes that one started, so a wrapper script should
-`exec` the client. On Windows, a bare `bash` runs WSL's `bash.exe` from
+The command has to be the client itself, running until the session is over:
+
+- A launcher that starts the client and returns ends the capture at once, as
+  a command that never logged in.
+- If capture fails or times out first, Peel stops the command. It stops the
+  process it started, not processes that one started, so a wrapper script
+  should `exec` the client.
+- A client that disconnects but stays open keeps Peel waiting for it, with the
+  trace already written. Always pass `--max-duration` so such a run ends.
+- If Peel itself is killed, for example by a cancelled CI job, the command is
+  left running.
+
+On Windows, a bare `bash` runs WSL's `bash.exe` from
 `System32` rather than Git Bash, and WSL does not pass the `PEEL_*` variables
 on; give the full path to the `bash.exe` you mean.
 
@@ -109,7 +119,8 @@ on; give the full path to the `bash.exe` you mean.
 `stopped` is `disconnected` or `command_exited` for a session that ended by
 itself, and otherwise `connect_timeout`, `max_duration`,
 `encryption_requested`, `unsupported_protocol` or `error`. `trace` is `null`
-when no login was recorded.
+when no login was recorded; a capture that failed part way still names the
+trace, which holds what was recorded until then.
 
 ### Exit codes
 
