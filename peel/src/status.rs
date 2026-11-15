@@ -4,6 +4,15 @@
 use std::fmt::Display;
 use std::io::{self, IsTerminal};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set by `--quiet`: no log lines and no status line. Errors are printed by
+/// the caller and are not affected.
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, Ordering::Relaxed);
+}
 
 /// Length of the status line currently drawn, 0 when there is none.
 static STATUS_LEN: Mutex<usize> = Mutex::new(0);
@@ -18,18 +27,26 @@ macro_rules! note {
 pub(crate) use note;
 
 pub fn note_line(msg: impl Display) {
+    if QUIET.load(Ordering::Relaxed) {
+        return;
+    }
+    clear();
+    eprintln!("peel: {msg}");
+}
+
+/// Erases the status line, for output that must not share its line.
+pub fn clear() {
     let mut status_len = STATUS_LEN.lock().unwrap();
     if *status_len > 0 {
         eprint!("\r{:width$}\r", "", width = *status_len);
         *status_len = 0;
     }
-    eprintln!("peel: {msg}");
 }
 
 /// Redraws the status line. Skipped when stderr is not a terminal, so
-/// redirected logs stay free of carriage returns.
+/// redirected logs stay free of carriage returns, and under `--quiet`.
 pub fn show(text: &str) {
-    if !io::stderr().is_terminal() {
+    if QUIET.load(Ordering::Relaxed) || !io::stderr().is_terminal() {
         return;
     }
     let mut status_len = STATUS_LEN.lock().unwrap();

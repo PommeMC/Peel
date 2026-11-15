@@ -9,6 +9,22 @@ use peel_decode::{Grouping, Loaded, WINDOW_US, names};
 use peel_trace::{Direction, Phase};
 use serde::Serialize;
 
+/// Process exit codes, documented in the README. A command run by
+/// `peel capture -- <command>` passes its own status through instead.
+pub mod exit {
+    pub const OK: i32 = 0;
+    /// `peel diff` found a difference it was asked to fail on.
+    pub const DIFFERS: i32 = 1;
+    /// Bad arguments, or a trace that could not be read.
+    pub const ERROR: i32 = 2;
+    /// `peel capture` hit `--connect-timeout` or `--max-duration`. The same
+    /// code `timeout(1)` uses.
+    pub const TIMEOUT: i32 = 124;
+    /// `peel capture` could not capture: an encryption request, an
+    /// unsupported protocol, or an IO error.
+    pub const CAPTURE_FAILED: i32 = 125;
+}
+
 /// A trace file's bytes, and the trace read from them.
 pub fn read_trace(path: &Path) -> Result<(Vec<u8>, Loaded)> {
     let bytes = fs::read(path).with_context(|| format!("opening {}", path.display()))?;

@@ -34,6 +34,7 @@ and is built on that repo's `pomme-protocol` crate.
 - **Reference traces**: vanilla captures of walking, sprint-jumping, combat, building and inventory use, with the setup and steps to record your own the same way
 - **Coverage report**: `peel coverage` and the viewer say what decoded and which values Peel doesn't read yet, so nothing is quietly missing
 - **Text or JSON output** for reading traces yourself or scripting against them
+- **Unattended capture**: `peel capture -- <command>` records a scripted client run with timeouts and distinct exit codes, and `peel diff --fail-on behaviour` gates on it in CI
 
 Planned:
 
@@ -64,6 +65,59 @@ made while one is recording (such as a server transfer's reconnect), are
 forwarded but not recorded. Peel refuses to overwrite an existing trace unless
 you pass `--force`, and a capture that is killed partway still leaves a
 readable trace.
+
+### Capture from a script or CI
+
+`peel capture` can run with nobody at the keyboard. Give it the command that
+starts your client after `--`:
+
+```bash
+peel capture --listen 127.0.0.1:0 --out run.trace \
+    --connect-timeout 60 --max-duration 600 -- ./run-scenario.sh
+```
+
+Peel starts the proxy, runs the command with the proxy's address in its
+environment (`PEEL_ADDR` as `host:port`, plus `PEEL_HOST` and `PEEL_PORT`),
+stops capturing when the command exits, and exits with the command's status.
+If capture fails or times out first, Peel stops the command. It stops the
+process it started, not processes that one started, so a wrapper script should
+`exec` the client.
+
+- `--listen 127.0.0.1:0` picks a free port. The address in use is printed as
+  the one line on stdout once the proxy accepts connections, and written to
+  `--ready-file <path>` if you pass one, for scripts that start the client
+  themselves. The command's own stdout is sent to stderr, so stdout only ever
+  holds Peel's lines.
+- `--connect-timeout <secs>` gives up if no client has logged in by then.
+- `--max-duration <secs>` gives up if capture is still running that long after
+  the proxy started listening. The trace keeps what was recorded until then.
+- `--quiet` prints only errors. The live status line is only ever drawn on a
+  terminal.
+- `--json` turns stdout into two JSON lines: the ready line, then a summary.
+
+```json
+{"event":"listening","addr":"127.0.0.1:50686","host":"127.0.0.1","port":50686}
+{"event":"finished","trace":"run.trace","protocol":777,"version":"26.3","packets":{"serverbound":4211,"clientbound":18840},"duration_ms":93512,"stopped":"command_exited","command_exit_code":0,"exit_code":0,"error":null}
+```
+
+`stopped` is `disconnected` or `command_exited` for a session that ended by
+itself, and otherwise `connect_timeout`, `max_duration`,
+`encryption_requested`, `unsupported_protocol` or `error`. `trace` is `null`
+when no login was recorded.
+
+### Exit codes
+
+| Code  | Meaning                                                                                                                                                |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0     | Success. For `peel diff`, nothing it was asked to fail on                                                                                              |
+| 1     | `peel diff` found differences                                                                                                                          |
+| 2     | Bad arguments, or a trace that could not be read                                                                                                       |
+| 124   | `peel capture` hit `--connect-timeout` or `--max-duration`                                                                                             |
+| 125   | `peel capture` failed: the server asked for encryption, the protocol isn't supported, an IO error, or its command exited 0 without ever logging in     |
+| other | The status of the command `peel capture` ran, when that is not 0. A command killed by a signal reports 128 plus the signal number, as a shell would    |
+
+A command that itself exits 124 or 125 looks like Peel's own codes; the
+`--json` summary tells them apart with `command_exit_code`.
 
 ### Read a trace
 
@@ -146,6 +200,15 @@ signatures, are skipped; `--no-default-ignores` compares them too, and
 `--ignore keep_alive` or `--ignore '*.salt'` skips more. If one trace starts a
 tick later, `--offset 1` lines them up. `peel diff` exits with 1 when the traces
 differ, so it can run in CI, and `--json` prints every aligned row.
+
+Two runs that weren't played tick for tick alike, such as a scripted run
+against a hand-played reference, rarely share tick numbers. `--fail-on
+behaviour` exits 0 when every finding is a shifted packet and 1 only for the
+rest: missing, extra and reordered packets and fields that differ. In `--json`,
+each finding's `kind` is `missing`, `extra`, `moved` (reordered within a tick),
+`shifted` or `field`. A packet further apart than `--shift-window` is still
+missing and extra, so a client that waits far longer than vanilla does not pass
+as timing.
 
 `peel view mine.trace --against vanilla.trace` opens the same comparison in the
 viewer, or choose **Compare…** with a trace open. At
