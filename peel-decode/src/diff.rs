@@ -1,6 +1,7 @@
 //! Compares a trace against a vanilla reference, tick by tick: packets that
 //! are missing, extra or out of order, and fields that differ.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 
@@ -128,6 +129,21 @@ pub struct Options {
     pub align_on: Vec<String>,
     /// Leave out the groups after the last complete one both traces have.
     pub trim_end: bool,
+    /// Fields (`move_player_pos.position`, `*.y_rot`) to compare although
+    /// [`DEFAULT_IGNORES`] skips them. A rule in `ignores` still wins.
+    pub compare: Vec<String>,
+    /// Fields whose numbers may differ by a little. Each is compared too,
+    /// as if it were in `compare`.
+    pub tolerances: Vec<Tolerance>,
+}
+
+/// How far apart a field's numbers may be and still count as the same.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tolerance {
+    /// A field, as in [`Options::compare`].
+    pub rule: String,
+    /// The largest difference allowed, in the unit the field is shown in.
+    pub within: f64,
 }
 
 impl Options {
@@ -155,8 +171,13 @@ pub enum Error {
     NothingToAlignOn {
         in_reference: bool,
     },
-    /// An `align_on` name that is no packet of the traces' version.
+    /// A name in `align_on`, `compare` or `tolerances` that is no packet of
+    /// the traces' version.
     UnknownPacket(String),
+    /// A `compare` or `tolerances` rule that names a whole packet.
+    NoField(String),
+    /// A tolerance that is negative or not a number.
+    BadTolerance(String),
 }
 
 impl fmt::Display for Error {
@@ -174,10 +195,14 @@ impl fmt::Display for Error {
                 if *in_reference { "reference" } else { "trace" }
             ),
             Self::UnknownPacket(name) => {
-                write!(
-                    f,
-                    "{name} is not a packet in this version, so it can't be aligned on"
-                )
+                write!(f, "{name} is not a packet in this version")
+            }
+            Self::NoField(rule) => write!(
+                f,
+                "{rule} names no field; write it as packet.field or *.field"
+            ),
+            Self::BadTolerance(rule) => {
+                write!(f, "the tolerance for {rule} must be zero or more")
             }
         }
     }
@@ -204,6 +229,16 @@ pub struct Diff {
     pub trimmed_after: Option<GroupKey>,
     /// Every rule applied, defaults included.
     pub ignores: Vec<String>,
+    /// The fields compared although a default rule skips them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub compared: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tolerances: Vec<Tolerance>,
+    /// The `compared` and `tolerances` rules that covered no field of any
+    /// pair of packets, so they checked nothing: a misspelt field, or a
+    /// packet the traces don't both send.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unmatched: Vec<String>,
     pub group_counts: GroupCounts,
     pub groups: Vec<GroupDiff>,
     pub findings: Vec<Finding>,
@@ -326,13 +361,19 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
             trace: trace_protocol,
         });
     }
-    let ignores = Ignores::new(options);
+    let ignores = Ignores::new(options)?;
+    check_packets(
+        protocol,
+        ignores
+            .checked()
+            .filter_map(|checked| checked.rule.packet.as_deref()),
+    )?;
     // Where each trace is lined up, reference first: the group's number and
     // the packet found in it.
     let aligned = if options.align_on.is_empty() {
         None
     } else {
-        check_packets(protocol, &options.align_on)?;
+        check_packets(protocol, options.align_on.iter().map(String::as_str))?;
         let [reference, trace] = [0, 1].map(|side| {
             first_group_with(&timelines[side], options).ok_or(Error::NothingToAlignOn {
                 in_reference: side == 0,
@@ -415,6 +456,20 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
         aligned_on: aligned.map(|sides| sides.map(|(_, packet)| packet)),
         trimmed_after,
         ignores: ignores.rules.iter().map(ToString::to_string).collect(),
+        compared: ignores.compare.iter().map(Checked::name).collect(),
+        tolerances: ignores
+            .tolerances
+            .iter()
+            .map(|(checked, within)| Tolerance {
+                rule: checked.name(),
+                within: *within,
+            })
+            .collect(),
+        unmatched: ignores
+            .checked()
+            .filter(|checked| !checked.used.get())
+            .map(Checked::name)
+            .collect(),
         group_counts,
         groups,
         findings,
@@ -423,7 +478,7 @@ pub fn diff(reference: &Loaded, trace: &Loaded, options: &Options) -> Result<Dif
 
 /// Fails on a name that no phase or direction of `protocol` has, so a typo
 /// isn't taken for a packet neither trace happens to send.
-fn check_packets(protocol: i32, names: &[String]) -> Result<(), Error> {
+fn check_packets<'a>(protocol: i32, mut names: impl Iterator<Item = &'a str>) -> Result<(), Error> {
     let Some(table) = PacketTable::for_protocol(protocol) else {
         return Ok(());
     };
@@ -434,8 +489,8 @@ fn check_packets(protocol: i32, names: &[String]) -> Result<(), Error> {
                 .any(|direction| names::packet_id(table, phase, direction, name).is_some())
         })
     };
-    match names.iter().find(|name| !known(name)) {
-        Some(name) => Err(Error::UnknownPacket(name.clone())),
+    match names.find(|name| !known(name)) {
+        Some(name) => Err(Error::UnknownPacket(name.to_string())),
         None => Ok(()),
     }
 }
@@ -783,7 +838,11 @@ fn compare_fields(pair: [&Packet; 2], sides: &[Side; 2], ignores: &Ignores) -> V
         .filter(|path| !ignores.field(pair[0].name, path))
         .filter_map(|path| {
             let (r, t) = (lookup(&reference_values, path), lookup(&trace_values, path));
-            (r != t).then(|| FieldDiff {
+            let same = match (&r, &t) {
+                (Some(r), Some(t)) => ignores.same(pair[0].name, path, r, t),
+                _ => r == t,
+            };
+            (!same).then(|| FieldDiff {
                 path: path.clone(),
                 reference: r,
                 trace: t,
@@ -961,6 +1020,15 @@ impl Rule {
     fn matches_packet(&self, name: Option<&str>) -> bool {
         self.packet.is_none() || self.packet.as_deref() == name
     }
+
+    /// Whether this names `path` in `name`, or a field `path` is nested in.
+    fn covers(&self, name: Option<&str>, path: &str) -> bool {
+        self.matches_packet(name)
+            && self.path.as_deref().is_some_and(|rule_path| {
+                path.strip_prefix(rule_path)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+            })
+    }
 }
 
 impl fmt::Display for Rule {
@@ -973,12 +1041,50 @@ impl fmt::Display for Rule {
     }
 }
 
+/// A rule that asks for a field to be compared, and whether any pair of
+/// packets had that field.
+struct Checked {
+    rule: Rule,
+    used: Cell<bool>,
+}
+
+impl Checked {
+    fn parse(rule: &str) -> Result<Self, Error> {
+        let rule = Rule::parse(rule.trim());
+        if rule.path.as_deref().is_none_or(str::is_empty) {
+            return Err(Error::NoField(rule.to_string()));
+        }
+        Ok(Self {
+            rule,
+            used: Cell::new(false),
+        })
+    }
+
+    fn name(&self) -> String {
+        self.rule.to_string()
+    }
+
+    fn covers(&self, name: Option<&str>, path: &str) -> bool {
+        let covers = self.rule.covers(name, path);
+        if covers {
+            self.used.set(true);
+        }
+        covers
+    }
+}
+
+/// Which fields are compared, and how closely.
 struct Ignores {
+    /// The default rules, then the caller's.
     rules: Vec<Rule>,
+    /// How many of `rules` are defaults, which `compare` overrides.
+    defaults: usize,
+    compare: Vec<Checked>,
+    tolerances: Vec<(Checked, f64)>,
 }
 
 impl Ignores {
-    fn new(options: &Options) -> Self {
+    fn new(options: &Options) -> Result<Self, Error> {
         let defaults = if options.no_default_ignores {
             &[][..]
         } else {
@@ -992,7 +1098,34 @@ impl Ignores {
             .filter(|rule| !rule.is_empty())
             .map(Rule::parse)
             .collect();
-        Self { rules }
+        let compare = options
+            .compare
+            .iter()
+            .map(|rule| Checked::parse(rule))
+            .collect::<Result<_, _>>()?;
+        let tolerances = options
+            .tolerances
+            .iter()
+            .map(|tolerance| {
+                let checked = Checked::parse(&tolerance.rule)?;
+                if tolerance.within.is_nan() || tolerance.within < 0.0 {
+                    return Err(Error::BadTolerance(checked.name()));
+                }
+                Ok((checked, tolerance.within))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            rules,
+            defaults: defaults.len(),
+            compare,
+            tolerances,
+        })
+    }
+
+    fn checked(&self) -> impl Iterator<Item = &Checked> {
+        self.compare
+            .iter()
+            .chain(self.tolerances.iter().map(|(checked, _)| checked))
     }
 
     fn packet(&self, name: Option<&str>) -> bool {
@@ -1001,15 +1134,62 @@ impl Ignores {
             .any(|rule| rule.path.is_none() && rule.matches_packet(name))
     }
 
-    /// Whether a rule covers `path` or a field it is nested in.
+    /// Whether `path`, or a field it is nested in, is skipped: by one of the
+    /// caller's rules, or by a default that nothing asks to compare.
     fn field(&self, name: Option<&str>, path: &str) -> bool {
-        self.rules.iter().any(|rule| {
-            rule.matches_packet(name)
-                && rule.path.as_deref().is_some_and(|rule_path| {
-                    path.strip_prefix(rule_path)
-                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
-                })
-        })
+        // Counted, so that every rule sees the field and is marked as used.
+        let asked = self
+            .checked()
+            .filter(|checked| checked.covers(name, path))
+            .count()
+            > 0;
+        let (defaults, given) = self.rules.split_at(self.defaults);
+        let covers = |rules: &[Rule]| rules.iter().any(|rule| rule.covers(name, path));
+        covers(given) || (!asked && covers(defaults))
+    }
+
+    /// The tolerance for `path`: from a rule naming the packet before one
+    /// for `*`, and from the last given of those.
+    fn tolerance(&self, name: Option<&str>, path: &str) -> Option<f64> {
+        self.tolerances
+            .iter()
+            .filter(|(checked, _)| checked.rule.covers(name, path))
+            .max_by_key(|(checked, _)| checked.rule.packet.is_some())
+            .map(|(_, within)| *within)
+    }
+
+    /// Whether two values of the field at `path` count as the same.
+    fn same(&self, name: Option<&str>, path: &str, reference: &str, trace: &str) -> bool {
+        reference == trace
+            || self
+                .tolerance(name, path)
+                .is_some_and(|within| close(reference, trace, within))
+    }
+}
+
+/// Whether two shown values differ only in numbers, each by at most `within`.
+/// A value is split at spaces and commas, so a vector's parts are each
+/// checked, and a part that isn't a number has to match exactly.
+fn close(reference: &str, trace: &str, within: f64) -> bool {
+    fn parts(value: &str) -> impl Iterator<Item = &str> {
+        value
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|part| !part.is_empty())
+    }
+    fn number(part: &str) -> Option<f64> {
+        part.strip_suffix('°').unwrap_or(part).parse().ok()
+    }
+    let (mut reference, mut trace) = (parts(reference), parts(trace));
+    loop {
+        match (reference.next(), trace.next()) {
+            (None, None) => return true,
+            (Some(r), Some(t)) if r == t => {}
+            (Some(r), Some(t)) => match (number(r), number(t)) {
+                (Some(r), Some(t)) if (r - t).abs() <= within => {}
+                _ => return false,
+            },
+            _ => return false,
+        }
     }
 }
 
@@ -1314,18 +1494,140 @@ mod tests {
         assert!(!run(&[packs(&["core"])], &[packs(&["core", "extra"])], ignored).differs());
     }
 
+    /// A movement packet at `x` and a tick end, with a rotation for the
+    /// packets that carry one.
+    fn moves(name: &'static str, x: f64, rot: Option<[f32; 2]>) -> [Spec; 2] {
+        let mut body = [x, 64.0, 0.0].map(f64::to_be_bytes).concat();
+        for angle in rot.into_iter().flatten() {
+            body.extend(angle.to_be_bytes());
+        }
+        body.push(1);
+        [game(name, &body), tick_end()]
+    }
+
+    fn comparing(rules: &[&str]) -> Options {
+        Options {
+            compare: rules.iter().map(ToString::to_string).collect(),
+            ..Options::default()
+        }
+    }
+
+    fn within(rule: &str, within: f64) -> Options {
+        Options {
+            tolerances: vec![Tolerance {
+                rule: rule.into(),
+                within,
+            }],
+            ..Options::default()
+        }
+    }
+
+    #[test]
+    fn compare_turns_one_default_ignore_back_on() {
+        let reference = moves("move_player_pos_rot", 1.0, Some([10.0, 0.0]));
+        let trace = moves("move_player_pos_rot", 2.0, Some([20.0, 0.0]));
+        let diff = run(
+            &reference,
+            &trace,
+            comparing(&["move_player_pos_rot.position"]),
+        );
+        // The position is compared; the rotation is still a default ignore.
+        assert_eq!(
+            summary(&diff),
+            [(
+                FindingKind::Field,
+                "move_player_pos_rot",
+                Some("position"),
+                1
+            )]
+        );
+        assert_eq!(diff.compared, ["move_player_pos_rot.position"]);
+        assert!(diff.unmatched.is_empty());
+
+        // `*` covers every packet, and another packet's rule covers none.
+        assert!(run(&reference, &trace, comparing(&["*.position"])).differs());
+        let other = run(&reference, &trace, comparing(&["move_player_pos.position"]));
+        assert!(!other.differs());
+        assert_eq!(other.unmatched, ["move_player_pos.position"]);
+    }
+
+    #[test]
+    fn an_ignore_given_beats_compare() {
+        let options = Options {
+            ignores: vec!["move_player_pos_rot.position".into()],
+            ..comparing(&["*.position"])
+        };
+        let pos = |x| moves("move_player_pos", x, None);
+        assert!(run(&pos(1.0), &pos(2.0), options.clone()).differs());
+        let rot = |x| moves("move_player_pos_rot", x, Some([0.0, 0.0]));
+        assert!(!run(&rot(1.0), &rot(2.0), options).differs());
+    }
+
+    #[test]
+    fn tolerance_compares_a_field_within_a_margin() {
+        let rot = |y_rot: f32| moves("move_player_pos_rot", 1.0, Some([y_rot, 0.0]));
+        let options = within("move_player_pos_rot.y_rot", 0.001);
+        assert!(!run(&rot(90.0), &rot(90.00001), options.clone()).differs());
+        let diff = run(&rot(90.0), &rot(90.5), options);
+        assert_eq!(
+            summary(&diff),
+            [(FindingKind::Field, "move_player_pos_rot", Some("y_rot"), 1)]
+        );
+        assert_eq!(diff.tolerances[0].within, 0.001);
+
+        // Each part of a vector has to be within it.
+        let pos = |x| moves("move_player_pos", x, None);
+        let options = within("*.position", 0.5);
+        assert!(!run(&pos(1.0), &pos(1.25), options.clone()).differs());
+        assert!(run(&pos(1.0), &pos(2.0), options).differs());
+
+        // A rule naming the packet beats one for every packet.
+        let mut options = within("move_player_pos.position", 0.0);
+        options.tolerances.push(Tolerance {
+            rule: "*.position".into(),
+            within: 0.5,
+        });
+        assert!(run(&pos(1.0), &pos(1.25), options).differs());
+    }
+
+    #[test]
+    fn close_only_forgives_numbers() {
+        assert!(close("1.0, -60.0, 0.5", "1.0, -60.0000001, 0.5", 1e-6));
+        assert!(!close("1.0, -60.0, 0.5", "1.0, -60.1, 0.5", 1e-6));
+        assert!(close("90.0°", "90.5°", 1.0));
+        assert!(!close("0x01 forward", "0x02 forward", 5.0));
+        assert!(!close("1.0 stone", "1.0 dirt", 5.0));
+        assert!(!close("1.0, 2.0", "1.0", 5.0));
+        assert!(!close("NaN", "1.0", f64::INFINITY));
+    }
+
+    #[test]
+    fn compare_and_tolerance_rules_are_checked() {
+        let fails = |options: Options| {
+            let packets = load(LATEST.protocol, &[tick_end()]);
+            diff(&packets, &packets, &options).unwrap_err()
+        };
+        assert_eq!(
+            fails(comparing(&["move_player_pos"])),
+            Error::NoField("move_player_pos".into())
+        );
+        assert_eq!(
+            fails(comparing(&["move_player_poss.position"])),
+            Error::UnknownPacket("move_player_poss".into())
+        );
+        assert_eq!(
+            fails(within("*.position", -1.0)),
+            Error::BadTolerance("*.position".into())
+        );
+        assert_eq!(
+            fails(within("*.position", f64::NAN)),
+            Error::BadTolerance("*.position".into())
+        );
+    }
+
     #[test]
     fn default_ignores_skip_session_fields() {
-        let position = |x: f64| {
-            let body = [
-                &x.to_be_bytes()[..],
-                &64f64.to_be_bytes(),
-                &0f64.to_be_bytes(),
-                &[1],
-            ]
-            .concat();
-            [game("move_player_pos", &body), tick_end()]
-        };
+        let position = |x| moves("move_player_pos", x, None);
         assert!(!run(&position(1.0), &position(2.0), Options::default()).differs());
         let all = Options {
             no_default_ignores: true,

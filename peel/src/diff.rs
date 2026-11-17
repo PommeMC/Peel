@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use peel_decode::diff::{DEFAULT_SHIFT_WINDOW, Diff, Finding, FindingKind, Options};
+use peel_decode::diff::{DEFAULT_SHIFT_WINDOW, Diff, Finding, FindingKind, Options, Tolerance};
 use peel_decode::fields::count;
 
 use crate::cli;
@@ -45,6 +45,17 @@ pub struct Args {
     /// positions and ids, and how many replies the server asked for.
     #[arg(long)]
     no_default_ignores: bool,
+    /// Compare a field that is skipped by default (`move_player_pos.position`,
+    /// `*.y_rot`), leaving the other defaults on. Repeatable. For runs
+    /// scripted to press the same keys on the same ticks, where positions
+    /// repeat exactly. `--ignore` of the same field still wins.
+    #[arg(long, value_name = "FIELD")]
+    compare: Vec<String>,
+    /// Count a field's numbers as the same when they are at most N apart
+    /// (`move_player_rot.y_rot=0.001`), each part of a position on its own.
+    /// A field skipped by default is compared too. Repeatable.
+    #[arg(long, value_name = "FIELD=N", value_parser = tolerance)]
+    tolerance: Vec<Tolerance>,
     /// Print one JSON document, with every row, instead of text.
     #[arg(long)]
     json: bool,
@@ -63,6 +74,20 @@ enum FailOn {
     /// ones.
     #[value(alias = "behavior")]
     Behaviour,
+}
+
+fn tolerance(arg: &str) -> Result<Tolerance, String> {
+    let (rule, within) = arg
+        .rsplit_once('=')
+        .ok_or("write it as FIELD=N, such as move_player_rot.y_rot=0.001")?;
+    let within = within
+        .trim()
+        .parse()
+        .map_err(|_| format!("{within} is not a number"))?;
+    Ok(Tolerance {
+        rule: rule.trim().to_string(),
+        within,
+    })
 }
 
 impl FailOn {
@@ -86,6 +111,8 @@ pub fn run(args: Args) -> Result<i32> {
         shift_window: Some(args.shift_window),
         align_on: args.align_on,
         trim_end: args.trim_end,
+        compare: args.compare,
+        tolerances: args.tolerance,
     };
     let diff = peel_decode::diff::diff(&reference, &trace, &options)?;
     cli::print(|out| {
@@ -101,6 +128,12 @@ pub fn run(args: Args) -> Result<i32> {
             write_text(&diff, out)
         }
     })?;
+    for rule in &diff.unmatched {
+        eprintln!(
+            "peel: {rule} was asked to be compared, but no packet in both traces has that field, \
+             so it checked nothing"
+        );
+    }
     for (path, loaded) in [(&args.against, &reference), (&args.trace, &trace)] {
         if let Some(warning) = loaded.warning() {
             eprintln!("peel: {}: {warning}", path.display());
@@ -146,6 +179,16 @@ fn write_text(diff: &Diff, out: &mut impl Write) -> io::Result<()> {
         },
         diff.ignores.len()
     )?;
+    if !diff.compared.is_empty() {
+        writeln!(
+            out,
+            "comparing {} although skipped by default",
+            diff.compared.join(", ")
+        )?;
+    }
+    for Tolerance { rule, within } in &diff.tolerances {
+        writeln!(out, "comparing {rule} to within {within}")?;
+    }
     let counts = &diff.group_counts;
     writeln!(
         out,
@@ -293,6 +336,47 @@ mod tests {
         );
         assert!(text.ends_with("\nno differences\n"), "{text}");
         assert!(!diff.differs());
+    }
+
+    #[test]
+    fn says_which_fields_are_compared_and_how_closely() {
+        let moved = |x: f64| {
+            let body = [&x.to_be_bytes()[..], &[0; 16], &[1]].concat();
+            trace(&[("move_player_pos", &body), ("client_tick_end", &[])])
+        };
+        let options = Options {
+            compare: vec!["move_player_pos.position".into()],
+            tolerances: vec![tolerance("*.y_rot = 0.5").unwrap()],
+            ..Options::default()
+        };
+        let diff = peel_decode::diff::diff(&moved(1.0), &moved(1.5), &options).unwrap();
+        let text = text(&diff);
+        assert!(
+            text.contains(
+                "
+comparing move_player_pos.position although skipped by default
+"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "
+comparing *.y_rot to within 0.5
+"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "differs in 1 of 1, first in tick 1: 1.0, 0.0, 0.0 -> 1.5, 0.0, 0.0
+"
+            ),
+            "{text}"
+        );
+        assert_eq!(diff.unmatched, ["*.y_rot"]);
+        assert!(tolerance("move_player_pos.position").is_err());
+        assert!(tolerance("*.y_rot=close").is_err());
     }
 
     /// Three ticks, with `player_loaded` in the tick given, if any.
