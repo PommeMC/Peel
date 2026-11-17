@@ -216,6 +216,25 @@ Values that differ between any two sessions, such as positions, entity ids and
 signatures, are skipped; `--no-default-ignores` compares them too, and
 `--ignore player_input` or `--ignore '*.salt'` skips more.
 
+When both runs are scripted to press the same keys on the same ticks, on the
+same world and from the same spot, positions repeat exactly and are the most
+telling thing to compare: a client that moves at the wrong speed sends the
+same packets as vanilla with different positions in them. `--compare` turns
+one skipped field back on and leaves the rest of the defaults alone:
+
+```bash
+peel diff mine.trace --against vanilla.trace \
+    --compare move_player_pos.position --compare move_player_pos_rot.position
+```
+
+`--compare '*.position'` does it for every packet, and `--ignore` of the same
+field still wins. `--tolerance move_player_rot.y_rot=0.001` compares a field
+too, counting numbers at most that far apart as the same, each part of a
+position on its own; a rule that names its packet takes precedence over one
+for `*`. A field that names no packet of the version is an error, and one that
+no packet in both traces has is reported on stderr, since it checked nothing.
+In `--json` these are `compared`, `tolerances` and `unmatched`.
+
 Some packets the client only sends in answer to the server: `keep_alive`, and
 `chunk_batch_received` after each `chunk_batch_finished`. The server decides
 how many there are, so their number isn't compared with the reference's.
